@@ -206,7 +206,7 @@ fn every_sync_branch_with_and_without_etags() {
         assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Pushed);
         let old = work.bytes();
         dav.replace(work.remote_change("remote entry"));
-        assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Pulled);
+        assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Merged);
         assert_eq!(
             std::fs::read_dir(work.dir.path().join("backups"))
                 .unwrap()
@@ -293,7 +293,7 @@ fn initial_matching_file_needs_no_upload_and_backup_retention_is_five() {
     );
     for i in 0..7 {
         dav.replace(work.remote_change(&format!("remote {i}")));
-        assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Pulled);
+        assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Merged);
     }
     assert_eq!(
         std::fs::read_dir(work.dir.path().join("backups"))
@@ -317,4 +317,56 @@ fn rejects_plaintext_remote_url_and_url_credentials() {
         assert!(matches!(config.validate(), Err(SyncError::InvalidUrl)));
     }
     let _ = Times::epoch();
+}
+
+// Regression: a remote file that regresses to an earlier version
+// replaces a newer, already-synced working copy without merging.
+#[test]
+fn remote_rollback_keeps_newer_local() {
+    let work = Working::new();
+    let dav = Dav::new(None, true);
+    assert_eq!(work.run(&dav).unwrap(), SyncOutcome::CreatedRemote);
+    let first = work.bytes();
+    work.change("added after first upload");
+    assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Pushed);
+    let vault = Vault::open(&work.local(), work.creds.clone()).unwrap();
+    let before = vault.database.iter_all_entries().count();
+    assert_eq!(before, 1);
+    dav.replace(first);
+    assert_eq!(work.run(&dav).unwrap(), SyncOutcome::Merged);
+    let vault = Vault::open(&work.local(), work.creds.clone()).unwrap();
+    assert_eq!(vault.database.iter_all_entries().count(), 1);
+    let _ = Times::now();
+    let _ = DatabaseKey::new();
+}
+// Regression: an unrelated vault with the same credentials is pulled
+// over the working copy when only the remote changed.
+#[test]
+fn remote_only_change_rejects_unrelated_root() {
+    let work = Working::new();
+    let dav = Dav::new(None, true);
+    work.change("local key");
+    assert_eq!(work.run(&dav).unwrap(), SyncOutcome::CreatedRemote);
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut other = Vault::create(&other_dir.path().join("o.kdbx"), work.creds.clone()).unwrap();
+    other.database.config.kdf_config = keepass::config::KdfConfig::Aes { rounds: 10 };
+    other.save().unwrap();
+    let local_root = Vault::open(&work.local(), work.creds.clone())
+        .unwrap()
+        .database
+        .root()
+        .id();
+    assert_ne!(local_root, other.database.root().id());
+    dav.replace(std::fs::read(other_dir.path().join("o.kdbx")).unwrap());
+    let before = work.bytes();
+    assert!(matches!(
+        work.run(&dav),
+        Err(SyncError::Merge(
+            signet_vault::merge::MergeError::DifferentRoots
+        ))
+    ));
+    assert_eq!(before, work.bytes());
+    let vault = Vault::open(&work.local(), work.creds.clone()).unwrap();
+    assert_eq!(vault.database.iter_all_entries().count(), 1);
+    assert_eq!(vault.database.root().id(), local_root);
 }

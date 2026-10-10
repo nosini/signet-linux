@@ -163,7 +163,12 @@ pub fn sync(
                     .limit(256 * 1024 * 1024)
                     .read_to_vec()?;
                 // Authenticate even an unchanged downloaded body before accepting it.
-                remote_database(&bytes, creds)?;
+                let other = remote_database(&bytes, creds)?;
+                let ours =
+                    Database::parse(&initial, creds.database_key()?).map_err(VaultError::from)?;
+                if ours.root().id() != other.root().id() {
+                    return Err(merge::MergeError::DifferentRoots.into());
+                }
                 let digest = hash(&bytes);
                 let changed = digest != state.remote_hash;
                 (Some(bytes), digest, changed)
@@ -179,12 +184,6 @@ pub fn sync(
             (initial.clone(), SyncOutcome::CreatedRemote, true)
         } else if !local_changed && !remote_changed {
             (initial.clone(), SyncOutcome::UpToDate, false)
-        } else if !local_changed {
-            (
-                remote.ok_or(SyncError::Http(status))?,
-                SyncOutcome::Pulled,
-                false,
-            )
         } else if !remote_changed || remote_hash == local_hash {
             (
                 initial.clone(),

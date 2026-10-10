@@ -72,7 +72,10 @@ or read at that point. A sync then works like this:
 1. Download the remote file, sending the remembered ETag as `If-None-Match`.
    A `304 Not Modified` response, or a body with the remembered hash, means
    the remote copy hasn't changed.
-2. If only the remote copy changed, it replaces the local one.
+2. Every downloaded file must have the same root UUID as the local vault.
+   If only the remote copy changed, merge it with the local copy and upload
+   the result conditionally. Newer local entries survive server rollback;
+   explicit deletion tombstones still propagate.
 3. If only the local copy changed, it's uploaded with `If-Match` set to the
    remembered ETag. If the server has no copy yet, the upload uses
    `If-None-Match: *`.
