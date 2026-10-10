@@ -439,3 +439,31 @@ fn unknown_grip_does_not_unlock_and_uses_agent_error_source() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("ERR 67108881"));
     assert!(fs::read(h.dir.path().join("prompts")).unwrap().is_empty());
 }
+
+#[test]
+fn webdav_set_preserves_credential_helper_interval_and_comments() {
+    let h = Harness::new();
+    let path = h.dir.path().join("config/signet/config.toml");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, format!("# My vault\nvault = {:?}\ngnupg_home = {:?}\n[webdav]\nurl = 'https://old.example/vault.kdbx' # server\npassword_command = 'printf pw'\nsync_interval = '17m'\n", h.dir.path().join("vault.kdbx"), h.client)).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_signet"));
+    h.env(&mut command);
+    success(
+        command
+            .args(["webdav", "set", "https://new.example/vault.kdbx"])
+            .output()
+            .unwrap(),
+    );
+    let written = fs::read_to_string(path).unwrap();
+    let config: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        config["webdav"]["url"].as_str(),
+        Some("https://new.example/vault.kdbx")
+    );
+    assert_eq!(
+        config["webdav"]["password_command"].as_str(),
+        Some("printf pw")
+    );
+    assert_eq!(config["webdav"]["sync_interval"].as_str(), Some("17m"));
+    assert!(written.contains("# My vault") && written.contains("# server"));
+}

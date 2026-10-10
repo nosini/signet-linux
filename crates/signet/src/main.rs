@@ -267,12 +267,15 @@ fn main() -> Result<()> {
                 let password = password("WebDAV password: ")?;
                 config::webdav_entry(&url,user)?.set_password(&password).context("cannot save password in Secret Service; set webdav.password_command in config.toml instead")?;
             }
-            config.webdav = Some(config::WebDav {
-                url,
-                username: user,
+            let mut webdav = config.webdav.take().unwrap_or(config::WebDav {
+                url: url.clone(),
+                username: None,
                 password_command: None,
                 sync_interval: "10m".into(),
             });
+            webdav.url = url;
+            webdav.username = user;
+            config.webdav = Some(webdav);
             config.write()?;
             let _ = agent::control("reload");
             Ok(())

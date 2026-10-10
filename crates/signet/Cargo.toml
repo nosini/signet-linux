@@ -21,6 +21,7 @@ signet-vault = { path = "../signet-vault" }
 signal-hook = "0.3"
 tempfile = "3"
 toml = "0.9"
+toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }

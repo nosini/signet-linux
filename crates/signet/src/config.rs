@@ -120,7 +120,14 @@ impl Config {
         Ok(config)
     }
     pub fn write(&self) -> Result<()> {
-        private_write(&config_path(), toml::to_string_pretty(self)?.as_bytes())
+        let updated: toml_edit::DocumentMut = toml::to_string_pretty(self)?.parse()?;
+        let mut document: toml_edit::DocumentMut = if config_path().exists() {
+            fs::read_to_string(config_path())?.parse()?
+        } else {
+            toml_edit::DocumentMut::new()
+        };
+        merge_config(document.as_table_mut(), updated.as_table());
+        private_write(&config_path(), document.to_string().as_bytes())
     }
     pub fn lock_duration(&self) -> Result<Duration> {
         Ok(humantime::parse_duration(&self.lock_after_idle)?)
@@ -166,6 +173,27 @@ impl Config {
         }))
     }
 }
+fn merge_config(old: &mut toml_edit::Table, new: &toml_edit::Table) {
+    old.retain(|name, _| new.contains_key(name));
+    for (name, item) in new.iter() {
+        if let Some(existing) = old.get_mut(name) {
+            if let (Some(table), Some(updated)) = (existing.as_table_mut(), item.as_table()) {
+                merge_config(table, updated);
+            } else {
+                let mut replacement = item.clone();
+                if let (Some(value), Some(previous)) =
+                    (replacement.as_value_mut(), existing.as_value())
+                {
+                    *value.decor_mut() = previous.decor().clone();
+                }
+                *existing = replacement;
+            }
+        } else {
+            old.insert(name, item.clone());
+        }
+    }
+}
+
 pub fn webdav_entry(url: &url::Url, user: &str) -> Result<keyring::Entry> {
     keyring::Entry::new(&format!("signet-webdav:{url}"), user)
         .context("Secret Service unavailable; configure password_command instead")
@@ -186,4 +214,29 @@ pub fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     file.persist(path).map_err(|error| error.error)?;
     fs::File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn updates_preserve_webdav_options_and_comments() {
+        let mut old: toml_edit::DocumentMut = "# Vault settings\nvault = 'vault.kdbx' # private storage\n[webdav]\n# Use the credential helper\nurl = 'https://old.example/vault' # server\npassword_command = 'secret-tool lookup service signet'\nsync_interval = '17m'\n".parse().unwrap();
+        let new: toml_edit::DocumentMut = "vault = 'vault.kdbx'\n[webdav]\nurl = 'https://new.example/vault'\npassword_command = 'secret-tool lookup service signet'\nsync_interval = '17m'\n".parse().unwrap();
+        merge_config(old.as_table_mut(), new.as_table());
+        let written = old.to_string();
+        for comment in [
+            "# Vault settings",
+            "# private storage",
+            "# Use the credential helper",
+            "# server",
+        ] {
+            assert!(written.contains(comment), "{written}");
+        }
+        assert_eq!(old["webdav"]["sync_interval"].as_str(), Some("17m"));
+        assert_eq!(
+            old["webdav"]["url"].as_str(),
+            Some("https://new.example/vault")
+        );
+    }
 }
