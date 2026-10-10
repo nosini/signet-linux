@@ -1,0 +1,23 @@
+[Unit]
+Description=Signet OpenPGP agent
+After=graphical-session-pre.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/signet agent
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-%h/.local/share/signet -%h/.local/state/signet -%t/signet -%t/gnupg
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+RuntimeDirectory=signet
+StateDirectory=signet
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,30 @@
+[package]
+name = "signet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+humantime = "2"
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+libc = "0.2"
+openssl = "0.10"
+rpassword = "7"
+sequoia-openpgp = { version = "2", default-features = false, features = ["crypto-openssl", "compression"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signet-vault = { path = "../signet-vault" }
+signal-hook = "0.3"
+tempfile = "3"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2", features = ["serde"] }
+zeroize = "1"
+
+[dev-dependencies]
+keepass = { version = "0.15", features = ["save_kdbx4"] }

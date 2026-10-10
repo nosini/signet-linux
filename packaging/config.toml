@@ -1,0 +1,13 @@
+vault = "~/.local/share/signet/vault.kdbx"
+gnupg_home = "~/.local/share/signet/gnupg"
+pinentry = "pinentry"
+lock_after_idle = "15m"
+
+[approval]
+remember = "0s"
+
+# [webdav]
+# url = "https://cloud.example.org/remote.php/dav/files/me/signet.kdbx"
+# username = "me"
+# password_command = "secret-tool lookup service signet-webdav"
+# sync_interval = "10m"
