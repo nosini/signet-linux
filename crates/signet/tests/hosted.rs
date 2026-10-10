@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Exercises the API used by the desktop app in an isolated subprocess.
 use anyhow::Result;
+use sequoia_openpgp::parse::Parse;
 use signet::{
     agent::Agent,
     config, manage,
@@ -100,6 +101,57 @@ fn hosted_agent_and_file_setup() {
             .starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----")
     );
     handle.setup_gnupg().unwrap();
+    // Secret export needs the master password and protects the result.
+    assert!(handle.export_secret(&fp, "wrong", "export pass").is_err());
+    assert!(handle.export_secret(&fp, "test", "").is_err());
+    let armor = handle.export_secret(&fp, "test", "export pass").unwrap();
+    let exported = sequoia_openpgp::Cert::from_bytes(armor.as_bytes()).unwrap();
+    assert!(exported.keys().secret().count() >= 2);
+    assert_eq!(exported.keys().unencrypted_secret().count(), 0);
+    let unlocked =
+        signet_vault::unlock_cert(exported, &mut || Some(Zeroizing::new("export pass".into())))
+            .unwrap();
+    assert!(unlocked.keys().unencrypted_secret().count() >= 2);
+    let gnupg = tempfile::tempdir().unwrap();
+    let import = |args: &[&str]| {
+        let mut child = Command::new("gpg")
+            .arg("--homedir")
+            .arg(gnupg.path())
+            .args([
+                "--batch",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                "export pass",
+            ])
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(armor.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let output = import(&["--import"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = import(&["--with-colons", "--list-secret-keys"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&fp));
+    let _ = Command::new("gpgconf")
+        .arg("--homedir")
+        .arg(gnupg.path())
+        .args(["--kill", "all"])
+        .status();
     handle.lock().unwrap();
     assert!(handle.status().unwrap().locked);
     handle.unlock().unwrap();

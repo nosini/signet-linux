@@ -20,7 +20,10 @@ Choose **Import Key** to add an OpenPGP key file. Signet asks for its
 passphrase when needed and prepares the dedicated GnuPG home automatically.
 Open a key's details to copy its fingerprint, copy or save its public
 certificate, copy Git signing commands, or remove it from the vault.
-Secret keys cannot be exported from the app.
+**Export Secret Key…** saves a backup after you confirm the master password;
+Signet protects the file with a new passphrase that you choose. Programs that
+use the agent, such as Seahorse or `gpg --export-secret-keys`, can't export
+secret keys.
 
 Use **Copy GNUPGHOME** and paste the assignment into the shell that will run
 GnuPG or Git. The dedicated home contains public certificates and trust

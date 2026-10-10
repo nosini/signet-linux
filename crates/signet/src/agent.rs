@@ -764,6 +764,47 @@ impl Handle {
             .context("key not found")?;
         Ok(signet_vault::public_armor(&key.cert)?)
     }
+    /// The secret key, protected with `passphrase`. The master password is
+    /// required again so an unlocked, unattended session can't export it.
+    /// Agent clients can never request this.
+    pub fn export_secret(
+        &self,
+        fingerprint: &str,
+        master_password: &str,
+        passphrase: &str,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        let fingerprint = fingerprint.parse::<sequoia_openpgp::Fingerprint>()?;
+        if passphrase.is_empty() {
+            bail!("choose a passphrase to protect the exported key");
+        }
+        unlock_shared(&self.shared, &Options::new())?;
+        let cert = {
+            let state = self.state()?;
+            let vault = state.vault.as_ref().context("vault is locked")?;
+            let expected = vault
+                .credentials()
+                .password
+                .as_deref()
+                .map_or("", |p| p.as_str());
+            if sequoia_openpgp::crypto::mem::secure_cmp(
+                expected.as_bytes(),
+                master_password.as_bytes(),
+            ) != std::cmp::Ordering::Equal
+            {
+                bail!("the master password is incorrect");
+            }
+            vault
+                .keys()
+                .into_iter()
+                .find(|key| key.fingerprint == fingerprint)
+                .context("key not found")?
+                .cert
+        };
+        Ok(signet_vault::protected_secret_armor(
+            &cert,
+            &passphrase.into(),
+        )?)
+    }
     /// Imports the vault's certificates and owner trust into the dedicated
     /// GnuPG home.
     pub fn setup_gnupg(&self) -> Result<PathBuf> {

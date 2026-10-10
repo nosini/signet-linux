@@ -456,6 +456,34 @@ pub fn public_armor(cert: &Cert) -> Result<String, VaultError> {
     cert.armored().serialize(&mut buffer).map_err(pgp_error)?;
     String::from_utf8(buffer).map_err(pgp_error)
 }
+/// The armored secret key with every unprotected secret encrypted under
+/// `passphrase`, for backups and other OpenPGP software.
+pub fn protected_secret_armor(
+    cert: &Cert,
+    passphrase: &Password,
+) -> Result<Zeroizing<String>, VaultError> {
+    let mut replacements = Vec::new();
+    for key in cert.keys().unencrypted_secret() {
+        let protected = key
+            .key()
+            .clone()
+            .encrypt_secret(passphrase)
+            .map_err(pgp_error)?;
+        replacements.push(if key.primary() {
+            Packet::SecretKey(protected.role_into_primary())
+        } else {
+            Packet::SecretSubkey(protected.role_into_subordinate())
+        });
+    }
+    if replacements.is_empty() {
+        return Err(pgp_error("the key has no usable secret to export"));
+    }
+    let (protected, _) = cert
+        .clone()
+        .insert_packets(replacements)
+        .map_err(pgp_error)?;
+    secret_armor(&protected)
+}
 fn secret_armor(cert: &Cert) -> Result<Zeroizing<String>, VaultError> {
     let mut buffer = Zeroizing::new(Vec::new());
     cert.as_tsk()

@@ -344,8 +344,11 @@ impl Window {
             ("public", "Copy Public Key"),
             ("save", "Save Public Key…"),
             ("git", "Copy Git Commands"),
-            ("remove", "Remove Key…"),
         ]);
+        if key.secret == Some(signet_vault::SecretState::Usable) {
+            dialog.add_response("secret", "Export Secret Key…");
+        }
+        dialog.add_response("remove", "Remove Key…");
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
         let key = key.clone();
         let this = self.clone();
@@ -365,6 +368,7 @@ impl Window {
                         this.run("Key removed", move |h| h.remove(&key.fingerprint));
                     }
                 }
+                "secret" => this.export_secret(&key).await,
                 action @ ("public" | "save") => {
                     let save = action == "save";
                     let Some(handle) = this.handle.borrow().clone() else {
@@ -396,6 +400,79 @@ impl Window {
                 _ => {}
             }
         });
+    }
+    async fn export_secret(self: &Rc<Self>, key: &KeyInfo) {
+        let confirm = adw::AlertDialog::builder()
+            .heading("Export the secret key?")
+            .body(format!(
+                "{}\n{}\n\nAnyone with the exported file and its passphrase can sign and decrypt as you. Signet protects the file with a new passphrase that you choose.",
+                key.title, key.fingerprint
+            ))
+            .body_use_markup(false)
+            .default_response("cancel")
+            .close_response("cancel")
+            .build();
+        confirm.add_responses(&[("cancel", "Cancel"), ("export", "Export")]);
+        if confirm.choose_future(Some(&self.widget)).await != "export" {
+            return;
+        }
+        let Some(handle) = self.handle.borrow().clone() else {
+            return;
+        };
+        let prompter = self.prompter.clone();
+        let fingerprint = key.fingerprint.clone();
+        let exported = worker(move || {
+            // A cancelled prompt ends the export without an error.
+            let Ok(master) = prompter.ask_password(
+                "Confirm Master Password",
+                "Enter the vault's master password to export this secret key.",
+            ) else {
+                return Ok(None);
+            };
+            let Ok(passphrase) = prompter.ask_password(
+                "Protect the Exported Key",
+                "Choose a passphrase for the exported key file. You will need it to import the key elsewhere.",
+            ) else {
+                return Ok(None);
+            };
+            let Ok(repeated) = prompter.ask_password(
+                "Repeat the Passphrase",
+                "Enter the passphrase for the exported key file again.",
+            ) else {
+                return Ok(None);
+            };
+            if *passphrase != *repeated {
+                anyhow::bail!("the passphrases do not match");
+            }
+            handle
+                .export_secret(&fingerprint, &master, &passphrase)
+                .map(Some)
+        })
+        .await;
+        let armor = match exported {
+            Ok(Some(armor)) => armor,
+            Ok(None) => return,
+            Err(error) => return self.error(&error),
+        };
+        let chooser = gtk::FileDialog::builder()
+            .title("Save Secret Key")
+            .initial_name("secret-key.asc")
+            .build();
+        let Ok(file) = chooser.save_future(Some(&self.widget)).await else {
+            return;
+        };
+        match file
+            .replace_contents_future(
+                armor.as_bytes().to_vec(),
+                None,
+                false,
+                gio::FileCreateFlags::PRIVATE | gio::FileCreateFlags::REPLACE_DESTINATION,
+            )
+            .await
+        {
+            Ok(_) => self.toast("Secret key exported"),
+            Err(error) => self.error(&anyhow::anyhow!("{}", error.1)),
+        }
     }
     fn import(self: &Rc<Self>) {
         let this = self.clone();
