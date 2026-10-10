@@ -374,7 +374,11 @@ fn read_key(entry: &EntryRef<'_>) -> Result<Option<KeyEntry>, VaultError> {
         }) {
             Ok(unlocked) => {
                 cert = unlocked;
-                SecretState::Usable
+                if cert.keys().unencrypted_secret().next().is_some() {
+                    SecretState::Usable
+                } else {
+                    SecretState::Locked
+                }
             }
             Err(_) => SecretState::Locked,
         }
@@ -389,6 +393,12 @@ fn read_key(entry: &EntryRef<'_>) -> Result<Option<KeyEntry>, VaultError> {
         secret,
     }))
 }
+// GnuPG offline-primary/card stubs carry no usable encrypted secret material.
+fn secret_stub(material: &sequoia_openpgp::packet::key::SecretKeyMaterial) -> bool {
+    matches!(material, sequoia_openpgp::packet::key::SecretKeyMaterial::Encrypted(encrypted)
+        if matches!(encrypted.s2k(), sequoia_openpgp::crypto::S2K::Private { tag: 101, .. })
+           && encrypted.algo() == sequoia_openpgp::types::SymmetricAlgorithm::Unencrypted)
+}
 pub fn unlock_cert(
     cert: Cert,
     prompt: &mut dyn FnMut() -> Option<Zeroizing<String>>,
@@ -396,6 +406,9 @@ pub fn unlock_cert(
     let mut replacements = Vec::new();
     let mut cached_passphrase: Option<Zeroizing<String>> = None;
     for key in cert.keys().secret() {
+        if secret_stub(key.key().secret()) {
+            continue;
+        }
         let mut unlocked = key.key().clone();
         if unlocked.secret().is_encrypted()
             && let Some(password) = &cached_passphrase

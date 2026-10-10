@@ -302,6 +302,59 @@ fn connect(h: &Harness, args: &[&str]) -> Output {
 }
 
 #[test]
+fn offline_primary_stub_keeps_usable_signing_and_decryption_subkeys() {
+    let mut h = Harness::new();
+    h.generator(
+        &[
+            "--quick-gen-key",
+            "Offline <offline@example.org>",
+            "ed25519",
+            "cert",
+            "never",
+        ],
+        b"",
+    );
+    let listing = String::from_utf8(h.generator(&["--with-colons", "--list-keys"], b"")).unwrap();
+    let fingerprint = listing
+        .lines()
+        .find(|line| line.starts_with("fpr:"))
+        .unwrap()
+        .split(':')
+        .nth(9)
+        .unwrap();
+    h.generator(
+        &["--quick-add-key", fingerprint, "ed25519", "sign", "never"],
+        b"",
+    );
+    h.generator(
+        &["--quick-add-key", fingerprint, "cv25519", "encr", "never"],
+        b"",
+    );
+    let secret = h.generator(&["--export-secret-subkeys"], b"");
+    let public = h.generator(&["--export"], b"");
+    h.start(&secret, &public); // import must succeed without a passphrase callback
+    let signed = success(h.gpg(
+        &["--local-user", "offline@example.org", "--clearsign"],
+        b"offline message\n",
+    ));
+    success(h.gpg(&["--verify"], &signed));
+    let encrypted = success(h.gpg(
+        &[
+            "--trust-model",
+            "always",
+            "--recipient",
+            "offline@example.org",
+            "--encrypt",
+        ],
+        b"offline message\n",
+    ));
+    assert_eq!(
+        success(h.gpg(&["--decrypt"], &encrypted)),
+        b"offline message\n"
+    );
+}
+
+#[test]
 fn confirmation_ignores_client_environment() {
     let mut h = Harness::new();
     h.generator(

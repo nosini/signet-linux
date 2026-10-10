@@ -53,7 +53,7 @@ fn build_cache(vault: &Vault) -> Vec<CachedKey> {
         .into_iter()
         .filter(|e| e.secret == SecretState::Usable)
     {
-        for key in entry.cert.keys().secret() {
+        for key in entry.cert.keys().unencrypted_secret() {
             let public = key.key().clone().parts_into_public();
             if let Ok(grip) = Keygrip::of(public.mpis())
                 && let Ok(sexp) = crypto::public(&public)
@@ -215,7 +215,7 @@ impl State {
             if entry.secret != SecretState::Usable {
                 continue;
             }
-            for key in entry.cert.keys().secret() {
+            for key in entry.cert.keys().unencrypted_secret() {
                 if Keygrip::of(key.key().mpis()).is_ok_and(|k| k.to_string() == grip) {
                     return key.key().clone().into_keypair();
                 }
