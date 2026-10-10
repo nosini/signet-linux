@@ -332,7 +332,7 @@ fn pair_shared(
                 .get(&approval)
                 .is_some_and(|when| when.elapsed() < config.remember_duration().unwrap_or_default())
     };
-    if !remembered {
+    if !remembered && config.approval.asks(operation) {
         // Confirmation is authorization: client options never reach the prompt.
         let _ = options;
         prompter.approve(

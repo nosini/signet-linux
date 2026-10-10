@@ -25,11 +25,27 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub struct Approval {
     pub remember: String,
+    /// Ask before signing.
+    pub sign: bool,
+    /// Ask before decrypting.
+    pub decrypt: bool,
 }
 impl Default for Approval {
     fn default() -> Self {
         Self {
             remember: "0s".into(),
+            sign: true,
+            decrypt: true,
+        }
+    }
+}
+impl Approval {
+    /// Whether `operation` needs confirmation. Unknown operations always do.
+    pub fn asks(&self, operation: &str) -> bool {
+        match operation {
+            "sign" => self.sign,
+            "decrypt" => self.decrypt,
+            _ => true,
         }
     }
 }
@@ -219,6 +235,15 @@ pub fn private_write(path: &Path, data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn approvals_default_to_asking() {
+        let approval: Approval = toml::from_str("remember = '0s'").unwrap();
+        assert!(approval.asks("sign") && approval.asks("decrypt"));
+        let approval: Approval = toml::from_str("sign = false").unwrap();
+        assert!(!approval.asks("sign"));
+        assert!(approval.asks("decrypt"));
+        assert!(approval.asks("export"));
+    }
     #[test]
     fn updates_preserve_webdav_options_and_comments() {
         let mut old: toml_edit::DocumentMut = "# Vault settings\nvault = 'vault.kdbx' # private storage\n[webdav]\n# Use the credential helper\nurl = 'https://old.example/vault' # server\npassword_command = 'secret-tool lookup service signet'\nsync_interval = '17m'\n".parse().unwrap();

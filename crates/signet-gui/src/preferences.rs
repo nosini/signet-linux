@@ -27,10 +27,20 @@ pub fn show(window: &Rc<Window>) {
         .build();
     let page = adw::PreferencesPage::new();
     dialog.add(&page);
-    let security = adw::PreferencesGroup::builder().title("Security").description("Durations accept values such as 15m or 30s. Remembering approvals allows repeated use without asking again; 0s asks every time. Unidentified callers always require approval.").build();
+    let security = adw::PreferencesGroup::builder().title("Security").description("Durations accept values such as 15m or 30s. Remembering approvals allows repeated use without asking again; 0s asks every time, and unidentified callers are never remembered. Without a prompt, any program you run can sign or decrypt while the vault is unlocked.").build();
     page.add(&security);
     let idle = entry(&security, "Lock after idle");
     idle.set_text(&config.lock_after_idle);
+    let ask_sign = adw::SwitchRow::builder()
+        .title("Ask before signing")
+        .active(config.approval.sign)
+        .build();
+    security.add(&ask_sign);
+    let ask_decrypt = adw::SwitchRow::builder()
+        .title("Ask before decrypting")
+        .active(config.approval.decrypt)
+        .build();
+    security.add(&ask_decrypt);
     let remember = entry(&security, "Remember approvals");
     remember.set_text(&config.approval.remember);
     let login = adw::SwitchRow::builder()
@@ -70,6 +80,8 @@ pub fn show(window: &Rc<Window>) {
             let mut config = config.clone();
             config.lock_after_idle = idle.text().to_string();
             config.approval.remember = remember.text().to_string();
+            config.approval.sign = ask_sign.is_active();
+            config.approval.decrypt = ask_decrypt.is_active();
             let url = url.text().to_string();
             let username = user.text().to_string();
             let password = Zeroizing::new(pass.text().to_string());

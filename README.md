@@ -32,7 +32,9 @@ It asks for approval before signing or decrypting and locks after 15 idle
 minutes by default. **Lock**, **Unlock**, and **Sync** are also available
 in the window. Preferences control idle locking, approval reuse, startup at
 login, and WebDAV. Set approval reuse to `0s` to ask every time. Callers that
-cannot be identified always require a fresh approval.
+cannot be identified are never remembered. **Ask before signing** and **Ask
+before decrypting** can be turned off separately; then any program you run
+can use the key for that operation while the vault is unlocked.
 
 Closing the window keeps the agent running. Reopen Signet from the menu to
 manage it, or use **Quit Signet** to stop it. Use one agent at a time: if you
@@ -97,7 +99,8 @@ Configuration is in `~/.config/signet/config.toml`, respecting
 `XDG_CONFIG_HOME`. For graphical dialogs, set `pinentry` to your GUI pinentry,
 for example `/usr/bin/pinentry-qt`. `lock_after_idle = "15m"` and
 `[approval] remember = "0s"` control locking and approval reuse. Keeping
-`remember` at zero asks every time. With a custom vault or XDG data directory,
+`remember` at zero asks every time. `[approval] sign = false` or
+`decrypt = false` turns off the prompt for that operation. With a custom vault or XDG data directory,
 add its writable directories to the service's `ReadWritePaths` using
 `systemctl --user edit signet.service`.
 

@@ -109,6 +109,9 @@ impl Harness {
         success(execute(&mut command, input))
     }
     fn start(&mut self, secret: &[u8], public: &[u8]) {
+        self.start_with(secret, public, "");
+    }
+    fn start_with(&mut self, secret: &[u8], public: &[u8], extra_config: &str) {
         let credentials = Credentials {
             password: Some(Zeroizing::new("test master password".into())),
             keyfile: None,
@@ -130,7 +133,7 @@ impl Harness {
         fs::write(
             self.dir.path().join("config/signet/config.toml"),
             format!(
-                "vault = {:?}\ngnupg_home = {:?}\npinentry = {:?}\n",
+                "vault = {:?}\ngnupg_home = {:?}\npinentry = {:?}\n{extra_config}",
                 path.to_str().unwrap(),
                 self.client.to_str().unwrap(),
                 pinentry.to_str().unwrap()
@@ -294,6 +297,55 @@ fn real_gpg_sign_encrypt_deny_lock_and_export() {
     ));
 }
 
+#[test]
+fn approval_switches_skip_only_the_disabled_prompt() {
+    let mut h = Harness::new();
+    h.generator(
+        &[
+            "--quick-generate-key",
+            "Ed Test <ed@example.org>",
+            "ed25519",
+            "sign",
+            "0",
+        ],
+        b"",
+    );
+    let listing =
+        String::from_utf8(h.generator(&["--with-colons", "--list-keys", "ed@example.org"], b""))
+            .unwrap();
+    let fingerprint = listing
+        .lines()
+        .find(|line| line.starts_with("fpr:"))
+        .unwrap()
+        .split(':')
+        .nth(9)
+        .unwrap();
+    h.generator(
+        &["--quick-add-key", fingerprint, "cv25519", "encr", "0"],
+        b"",
+    );
+    let secret = h.generator(&["--export-secret-keys"], b"");
+    let public = h.generator(&["--export"], b"");
+    h.start_with(&secret, &public, "[approval]\nsign = false\n");
+    // Every prompt that does appear is denied.
+    fs::write(h.dir.path().join("deny"), b"").unwrap();
+    let message = b"Signed without a prompt.\n";
+    success(h.gpg(&["--local-user", "ed@example.org", "--sign"], message));
+    let encrypted = success(h.gpg(
+        &[
+            "--trust-model",
+            "always",
+            "--recipient",
+            "ed@example.org",
+            "--encrypt",
+        ],
+        message,
+    ));
+    assert!(!h.gpg(&["--decrypt"], &encrypted).status.success());
+    let prompts = fs::read_to_string(h.dir.path().join("prompts")).unwrap();
+    assert!(!prompts.contains("Allow sign?"), "{prompts}");
+    assert!(prompts.contains("Allow decrypt?"), "{prompts}");
+}
 fn connect(h: &Harness, args: &[&str]) -> Output {
     let mut command = Command::new("gpg-connect-agent");
     h.env(&mut command);
