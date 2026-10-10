@@ -103,126 +103,269 @@ struct State {
     socket: PathBuf,
     version: String,
     stopping: Arc<AtomicBool>,
+    generation: u64,
+    prompting: Arc<Mutex<()>>,
+    syncing: Arc<Mutex<()>>,
 }
 impl State {
     fn lock(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.vault = None;
         self.approvals.clear();
     }
-    fn refresh(&mut self) -> Result<()> {
-        let Some(vault) = &self.vault else {
-            return Ok(());
-        };
-        let cache = build_cache(vault);
-        write_cache(&self.config, &cache)?;
-        self.cache = cache;
-        Ok(())
-    }
-    fn unlock(&mut self, options: &Options) -> Result<()> {
-        if self.vault.is_some() {
-            self.used = Instant::now();
+}
+
+fn unlock_shared(shared: &Arc<Mutex<State>>, options: &Options) -> Result<()> {
+    let (config, epoch, prompting) = {
+        let mut state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        if state.vault.is_some() {
+            state.used = Instant::now();
             return Ok(());
         }
-        let no_password = self.config.credentials(None);
-        let vault = if self.config.keyfile.is_some() {
-            Vault::open(&self.config.vault, no_password).ok()
-        } else {
-            None
-        };
-        self.vault = Some(match vault {
-            Some(vault) => vault,
-            None => Vault::open(
-                &self.config.vault,
-                self.config
-                    .credentials(Some(prompt::password(&self.config.pinentry, options)?)),
-            )?,
-        });
-        self.used = Instant::now();
-        self.refresh()?;
-        if self.config.webdav.is_some()
-            && let Err(error) = self.sync()
-        {
-            tracing::warn!(%error,"sync failed while unlocking; using local vault");
+        (
+            state.config.clone(),
+            state.generation,
+            state.prompting.clone(),
+        )
+    };
+    let guard = prompting
+        .lock()
+        .map_err(|_| anyhow::anyhow!("prompt state poisoned"))?;
+    {
+        let state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        if state.generation != epoch {
+            bail!("vault state changed");
         }
-        Ok(())
+        if state.vault.is_some() {
+            return Ok(());
+        }
     }
-    fn sync(&mut self) -> Result<()> {
-        let result = (|| {
-            let cfg = self
-                .config
-                .webdav_config()?
-                .context("WebDAV is not configured")?;
-            let vault = self.vault.as_ref().context("vault is locked")?;
-            let credentials = vault.credentials().clone();
-            let outcome = signet_vault::sync::sync(
-                vault.path(),
-                &config::state_dir().join("sync.json"),
-                &cfg,
-                &credentials,
-            )?;
-            self.vault = Some(Vault::open(&self.config.vault, credentials)?);
-            self.refresh()?;
-            Ok(outcome)
-        })();
-        self.synced = Instant::now();
-        self.last_sync = Some(match &result {
-            Ok(outcome) => format!("{outcome:?}"),
-            Err(error) => format!("{error:#}"),
-        });
-        result.map(|_| ())
+    let vault = if config.keyfile.is_some() {
+        Vault::open(&config.vault, config.credentials(None)).ok()
+    } else {
+        None
+    };
+    let vault = match vault {
+        Some(vault) => vault,
+        None => Vault::open(
+            &config.vault,
+            config.credentials(Some(prompt::password(&config.pinentry, options)?)),
+        )?,
+    };
+    let cache = build_cache(&vault);
+    write_cache(&config, &cache)?;
+    {
+        let mut state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        if state.generation != epoch {
+            bail!("vault was locked while unlocking");
+        }
+        state.vault = Some(vault);
+        state.cache = cache;
+        state.used = Instant::now();
     }
-    fn pair(
-        &mut self,
-        grip: &str,
-        options: &Options,
-        caller: &prompt::Caller,
-        operation: &str,
-        description: &str,
-    ) -> Result<KeyPair> {
-        self.unlock(options)?;
-        let key = self
+    drop(guard);
+    if config.webdav.is_some()
+        && let Err(error) = sync_shared(shared)
+    {
+        tracing::warn!(%error, "sync failed while unlocking; using local vault");
+    }
+    Ok(())
+}
+
+fn sync_shared(shared: &Arc<Mutex<State>>) -> Result<()> {
+    let (config, credentials, epoch, syncing) = {
+        let state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        (
+            state.config.clone(),
+            state
+                .vault
+                .as_ref()
+                .context("vault is locked")?
+                .credentials()
+                .clone(),
+            state.generation,
+            state.syncing.clone(),
+        )
+    };
+    let _guard = syncing
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("sync already running"))?;
+    let result = (|| -> Result<_> {
+        let cfg = config
+            .webdav_config()?
+            .context("WebDAV is not configured")?;
+        let outcome = signet_vault::sync::sync(
+            &config.vault,
+            &config::state_dir().join("sync.json"),
+            &cfg,
+            &credentials,
+        )?;
+        let vault = Vault::open(&config.vault, credentials)?;
+        let cache = build_cache(&vault);
+        write_cache(&config, &cache)?;
+        Ok((outcome, vault, cache))
+    })();
+    let mut state = shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+    // Lock/reload cancels publication; completed encrypted file writes remain valid.
+    if state.generation != epoch {
+        bail!("vault state changed during sync");
+    }
+    state.synced = Instant::now();
+    state.last_sync = Some(match &result {
+        Ok((outcome, _, _)) => format!("{outcome:?}"),
+        Err(error) => format!("{error:#}"),
+    });
+    let (_, vault, cache) = result?;
+    state.vault = Some(vault);
+    state.cache = cache;
+    state.approvals.clear();
+    Ok(())
+}
+
+fn reload_shared(shared: &Arc<Mutex<State>>) -> Result<()> {
+    let updated = Config::read()?;
+    let (credentials, epoch) = {
+        let mut state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        if updated.gnupg_home != state.config.gnupg_home {
+            bail!("restart Signet after changing gnupg_home");
+        }
+        let credentials =
+            if updated.vault == state.config.vault && updated.keyfile == state.config.keyfile {
+                state
+                    .vault
+                    .as_ref()
+                    .map(|vault| vault.credentials().clone())
+            } else {
+                None
+            };
+        state.lock();
+        state.config = updated.clone();
+        (credentials, state.generation)
+    };
+    let (vault, cache) = if let Some(credentials) = credentials {
+        let _guard = signet_vault::lock(&updated.vault)?;
+        let vault = Vault::open(&updated.vault, credentials)?;
+        let cache = build_cache(&vault);
+        write_cache(&updated, &cache)?;
+        (Some(vault), cache)
+    } else {
+        (None, read_cache(&updated))
+    };
+    let mut state = shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+    if state.generation != epoch {
+        bail!("vault state changed during reload");
+    }
+    state.vault = vault;
+    state.cache = cache;
+    Ok(())
+}
+
+fn pair_shared(
+    shared: &Arc<Mutex<State>>,
+    grip: &str,
+    options: &Options,
+    caller: &prompt::Caller,
+    operation: &str,
+    description: &str,
+) -> Result<KeyPair> {
+    {
+        let state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        if !state.cache.iter().any(|key| key.grip == grip) {
+            bail!("secret key unavailable");
+        }
+    }
+    unlock_shared(shared, options)?;
+    let approval = (
+        grip.to_owned(),
+        operation.to_owned(),
+        caller.executables.clone(),
+    );
+    let (config, key, epoch, prompting) = {
+        let state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        let key = state
             .cache
             .iter()
             .find(|key| key.grip == grip)
             .cloned()
             .context("secret key unavailable")?;
-        let approval = (
-            grip.to_owned(),
-            operation.to_owned(),
-            caller.executables.clone(),
-        );
-        let remember = self.config.remember_duration()?;
-        if self
+        (
+            state.config.clone(),
+            key,
+            state.generation,
+            state.prompting.clone(),
+        )
+    };
+    let _guard = prompting
+        .lock()
+        .map_err(|_| anyhow::anyhow!("prompt state poisoned"))?;
+    let remembered = {
+        let state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+        if state.generation != epoch || state.vault.is_none() {
+            bail!("vault was locked before approval");
+        }
+        state
             .approvals
             .get(&approval)
-            .is_none_or(|when| when.elapsed() >= remember)
-        {
-            prompt::approve(
-                &self.config.pinentry,
-                options,
-                operation,
-                &key.title,
-                &key.fingerprint,
-                caller,
-                description,
-            )?;
-            if !remember.is_zero() {
-                self.approvals.insert(approval, Instant::now());
-            }
-        }
-        self.used = Instant::now();
-        for entry in self.vault.as_ref().context("vault locked")?.keys() {
-            if entry.secret != SecretState::Usable {
-                continue;
-            }
-            for key in entry.cert.keys().unencrypted_secret() {
-                if Keygrip::of(key.key().mpis()).is_ok_and(|k| k.to_string() == grip) {
-                    return key.key().clone().into_keypair();
-                }
-            }
-        }
-        bail!("secret key unavailable")
+            .is_some_and(|when| when.elapsed() < config.remember_duration().unwrap_or_default())
+    };
+    if !remembered {
+        prompt::approve(
+            &config.pinentry,
+            options,
+            operation,
+            &key.title,
+            &key.fingerprint,
+            caller,
+            description,
+        )?;
     }
+    let mut state = shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+    if state.generation != epoch {
+        bail!("vault was locked during approval");
+    }
+    let pair = state
+        .vault
+        .as_ref()
+        .context("vault locked")?
+        .keys()
+        .into_iter()
+        .filter(|entry| entry.secret == SecretState::Usable)
+        .find_map(|entry| {
+            entry
+                .cert
+                .keys()
+                .unencrypted_secret()
+                .find(|key| Keygrip::of(key.key().mpis()).is_ok_and(|k| k.to_string() == grip))
+                .map(|key| key.key().clone().into_keypair())
+        })
+        .context("secret key unavailable")??;
+    if !config.remember_duration()?.is_zero() {
+        state.approvals.insert(approval, Instant::now());
+    }
+    state.used = Instant::now();
+    Ok(pair)
 }
 pub fn prepare_home(config: &Config) -> Result<PathBuf> {
     config::private_dir(&config.gnupg_home)?;
@@ -342,6 +485,9 @@ pub fn run(config: Config) -> Result<()> {
         socket,
         version,
         stopping: stop.clone(),
+        generation: 0,
+        prompting: Arc::new(Mutex::new(())),
+        syncing: Arc::new(Mutex::new(())),
     }));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, stop.clone())?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, stop.clone())?;
@@ -363,9 +509,10 @@ pub fn run(config: Config) -> Result<()> {
                     });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error.into()),
+                Err(error) => tracing::warn!(%error, "accept failed; retrying"),
             }
         }
+        let mut schedule_sync = false;
         if let Ok(mut state) = state.try_lock() {
             if state.vault.is_some() && state.used.elapsed() >= state.config.lock_duration()? {
                 state.lock();
@@ -374,13 +521,19 @@ pub fn run(config: Config) -> Result<()> {
                 && let Some(webdav) = &state.config.webdav
             {
                 let interval = humantime::parse_duration(&webdav.sync_interval)?;
-                if !interval.is_zero()
-                    && state.synced.elapsed() >= interval
-                    && let Err(error) = state.sync()
-                {
-                    tracing::warn!(%error,"periodic sync failed");
+                if !interval.is_zero() && state.synced.elapsed() >= interval {
+                    state.synced = Instant::now();
+                    schedule_sync = true;
                 }
             }
+        }
+        if schedule_sync {
+            let shared = state.clone();
+            thread::spawn(move || {
+                if let Err(error) = sync_shared(&shared) {
+                    tracing::warn!(%error, "periodic sync failed");
+                }
+            });
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -399,6 +552,7 @@ struct Session {
 }
 fn serve(mut stream: UnixStream, state: Arc<Mutex<State>>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let pid = peer(&stream)?;
     let caller = prompt::caller(pid);
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -479,7 +633,7 @@ fn handle(
     writer: &mut impl Write,
     shared: &Arc<Mutex<State>>,
 ) -> std::result::Result<(), ProtocolError> {
-    let description = if command == "PKSIGN" || command == "PKDECRYPT" {
+    if command == "PKSIGN" || command == "PKDECRYPT" {
         let description = std::mem::take(&mut session.description);
         if !shared
             .lock()
@@ -490,16 +644,76 @@ fn handle(
         {
             return Err(no_key());
         }
-        description
-    } else {
-        String::new()
+        if command == "PKSIGN" {
+            let (algorithm, digest) = session.hash.take().ok_or_else(unsupported)?;
+            let mut pair = pair_shared(
+                shared,
+                &session.key,
+                &session.options,
+                caller,
+                "sign",
+                &description,
+            )?;
+            let signature = crypto::sign(&mut pair, algorithm, &digest)?;
+            assuan::data(writer, &signature)?;
+        } else {
+            let kem = !args.is_empty();
+            if kem && args != "--kem=PGP" {
+                return Err(unsupported());
+            }
+            let ciphertext = assuan::inquire(reader, writer)?;
+            let mut pair = pair_shared(
+                shared,
+                &session.key,
+                &session.options,
+                caller,
+                "decrypt",
+                &description,
+            )?;
+            let decrypted = crypto::decrypt(&mut pair, &ciphertext, kem)?;
+            if matches!(
+                pair.public().mpis(),
+                sequoia_openpgp::crypto::mpi::PublicKey::RSA { .. }
+            ) {
+                writeln!(writer, "S PADDING 0")?;
+            }
+            assuan::data(writer, &decrypted)?;
+        }
+        return Ok(());
+    }
+    if command == "RELOADAGENT" || command == "KILLAGENT" {
+        let updated = if command == "RELOADAGENT" {
+            Some(Config::read()?)
+        } else {
+            None
+        };
+        let cache = updated.as_ref().map(read_cache);
+        let mut state = shared.lock().map_err(|_| unsupported())?;
+        state.lock();
+        if let Some(updated) = updated {
+            if updated.gnupg_home != state.config.gnupg_home {
+                return Err(anyhow::anyhow!("restart Signet after changing gnupg_home").into());
+            }
+            state.config = updated;
+            state.cache = cache.unwrap_or_default();
+        } else {
+            state.stopping.store(true, Ordering::Relaxed);
+        }
+        return Ok(());
+    }
+    struct PublicState {
+        cache: Vec<CachedKey>,
+        socket: PathBuf,
+        version: String,
+    }
+    let state = {
+        let state = shared.lock().map_err(|_| unsupported())?;
+        PublicState {
+            cache: state.cache.clone(),
+            socket: state.socket.clone(),
+            version: state.version.clone(),
+        }
     };
-    let ciphertext = if command == "PKDECRYPT" {
-        Some(assuan::inquire(reader, writer)?)
-    } else {
-        None
-    };
-    let mut state = shared.lock().map_err(|_| unsupported())?;
     match command {
         "RESET" => {
             session.key.clear();
@@ -633,48 +847,6 @@ fn handle(
                 .ok_or_else(no_key)?;
             assuan::data(writer, &key.public)?;
         }
-        "PKSIGN" => {
-            let (algorithm, digest) = session.hash.take().ok_or_else(unsupported)?;
-            let mut pair =
-                state.pair(&session.key, &session.options, caller, "sign", &description)?;
-            let signature = crypto::sign(&mut pair, algorithm, &digest)?;
-            assuan::data(writer, &signature)?;
-        }
-        "PKDECRYPT" => {
-            let kem = !args.is_empty();
-            if kem && args != "--kem=PGP" {
-                return Err(unsupported());
-            }
-            let ciphertext = ciphertext.ok_or_else(unsupported)?;
-            let mut pair = state.pair(
-                &session.key,
-                &session.options,
-                caller,
-                "decrypt",
-                &description,
-            )?;
-            let decrypted = crypto::decrypt(&mut pair, &ciphertext, kem)?;
-            if matches!(
-                pair.public().mpis(),
-                sequoia_openpgp::crypto::mpi::PublicKey::RSA { .. }
-            ) {
-                writeln!(writer, "S PADDING 0")?;
-            }
-            assuan::data(writer, &decrypted)?;
-        }
-        "RELOADAGENT" => {
-            state.lock();
-            let updated = Config::read()?;
-            if updated.gnupg_home != state.config.gnupg_home {
-                return Err(anyhow::anyhow!("restart Signet after changing gnupg_home").into());
-            }
-            state.config = updated;
-            state.cache = read_cache(&state.config);
-        }
-        "KILLAGENT" => {
-            state.lock();
-            state.stopping.store(true, Ordering::Relaxed);
-        }
         _ => return Err(unsupported()),
     }
     Ok(())
@@ -690,56 +862,43 @@ fn serve_control(mut stream: UnixStream, shared: Arc<Mutex<State>>) -> Result<()
         bail!("control request too large");
     }
     let request: Value = serde_json::from_slice(&bytes)?;
-    let mut state = shared
-        .lock()
-        .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
     let command = request
         .get("command")
         .and_then(Value::as_str)
         .context("missing command")?;
-    let result: Result<Value> = (|| match command {
-        "status" => Ok(
-            json!({"locked":state.vault.is_none(),"key_count":state.cache.iter().map(|k| &k.fingerprint).collect::<std::collections::HashSet<_>>().len(),"last_sync":state.last_sync,"socket":state.socket,"gnupg_home":state.config.gnupg_home}),
+    let blocking: Option<Result<Value>> = match command {
+        "reload" => Some(reload_shared(&shared).map(|_| json!({"reloaded":true}))),
+        "unlock" => Some(unlock_shared(&shared, &Options::new()).map(|_| json!({"locked":false}))),
+        "sync" => Some(
+            unlock_shared(&shared, &Options::new())
+                .and_then(|_| sync_shared(&shared))
+                .map(|_| json!({"sync":"completed"})),
         ),
-        "keys" => Ok(if let Some(vault) = &state.vault {
-            json!(vault.keys().into_iter().map(|key| json!({"fingerprint": key.fingerprint.to_hex(), "title": prompt::sanitize(&key.title), "secret": format!("{:?}", key.secret), "user_ids": key.cert.userids().map(|id| prompt::sanitize(&String::from_utf8_lossy(id.userid().value()))).collect::<Vec<_>>()})).collect::<Vec<_>>())
-        } else {
-            serde_json::to_value(&state.cache)?
-        }),
-        "lock" => {
-            state.lock();
-            Ok(json!({"locked":true}))
-        }
-        "unlock" => {
-            state.unlock(&Options::new())?;
-            Ok(json!({"locked":false}))
-        }
-        "sync" => {
-            state.unlock(&Options::new())?;
-            state.sync()?;
-            Ok(json!({"sync":state.last_sync}))
-        }
-        "reload" => {
-            let updated = Config::read()?;
-            if updated.gnupg_home != state.config.gnupg_home {
-                bail!("restart Signet after changing gnupg_home");
-            }
-            if updated.vault != state.config.vault || updated.keyfile != state.config.keyfile {
-                state.lock();
-            }
-            state.config = updated;
-            if let Some(vault) = &state.vault {
-                let credentials = vault.credentials().clone();
-                state.vault = Some(Vault::open(&state.config.vault, credentials)?);
-                state.refresh()?;
+        _ => None,
+    };
+    let mut state = shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
+    let result: Result<Value> = if let Some(result) = blocking {
+        result
+    } else {
+        (|| match command {
+            "status" => Ok(
+                json!({"locked":state.vault.is_none(),"key_count":state.cache.iter().map(|k| &k.fingerprint).collect::<std::collections::HashSet<_>>().len(),"last_sync":state.last_sync,"socket":state.socket,"gnupg_home":state.config.gnupg_home}),
+            ),
+            "keys" => Ok(if let Some(vault) = &state.vault {
+                json!(vault.keys().into_iter().map(|key| json!({"fingerprint": key.fingerprint.to_hex(), "title": prompt::sanitize(&key.title), "secret": format!("{:?}", key.secret), "user_ids": key.cert.userids().map(|id| prompt::sanitize(&String::from_utf8_lossy(id.userid().value()))).collect::<Vec<_>>()})).collect::<Vec<_>>())
             } else {
-                state.cache = read_cache(&state.config);
+                serde_json::to_value(&state.cache)?
+            }),
+            "lock" => {
+                state.lock();
+                Ok(json!({"locked":true}))
             }
-            state.approvals.clear();
-            Ok(json!({"reloaded":true}))
-        }
-        _ => bail!("unknown control command"),
-    })();
+            _ => bail!("unknown control command"),
+        })()
+    };
+    drop(state);
     let response = match result {
         Ok(value) => json!({"ok":true,"result":value}),
         Err(error) => json!({"ok":false,"error":format!("{error:#}")}),
@@ -755,6 +914,7 @@ pub fn control(command: &str) -> Result<Value> {
     writeln!(stream)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let response: Value = serde_json::from_reader(stream)?;
     if response["ok"] != true {
         bail!("{}", response["error"].as_str().unwrap_or("control error"));

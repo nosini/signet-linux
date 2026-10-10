@@ -17,7 +17,8 @@ cargo test --locked --workspace
 
 `signet-vault` handles KDBX storage, import, transactional UUID merge, and
 WebDAV. `signet` implements Assuan, GnuPG keygrips, pinentry, the local JSON
-control socket, configuration, and CLI commands. No async runtime is used. The lockfile currently resolves keepass 0.15.0,
+control socket, configuration, and CLI commands. No async runtime is used. Prompts are serialized separately from agent state;
+network sync runs in workers. Locking invalidates pending unlocks and approvals. The lockfile currently resolves keepass 0.15.0,
 Sequoia 2.4.1, OpenSSL crate 0.10.81, ureq 3.4.2 and keyring 3.6.3.
 The OpenSSL backend supplies Sequoia's cryptography. The dedicated GnuPG home
 has `no-autostart`, so GnuPG cannot start its own agent there.

@@ -302,6 +302,88 @@ fn connect(h: &Harness, args: &[&str]) -> Output {
 }
 
 #[test]
+fn public_queries_and_lock_continue_during_trusted_confirmation() {
+    let mut h = Harness::new();
+    h.generator(
+        &[
+            "--quick-gen-key",
+            "Concurrent <concurrent@example.org>",
+            "ed25519",
+            "sign",
+            "never",
+        ],
+        b"",
+    );
+    let secret = h.generator(&["--export-secret-keys"], b"");
+    let public = h.generator(&["--export"], b"");
+    h.start(&secret, &public);
+    let info = connect(&h, &["KEYINFO --list"]);
+    let text = String::from_utf8_lossy(&info.stdout);
+    let grip = text.split_whitespace().nth(2).unwrap();
+    let pinentry = h.dir.path().join("pinentry");
+    let log = h.dir.path().join("pending-prompt");
+    let release = h.dir.path().join("release-prompt");
+    fs::write(&pinentry, format!("#!/bin/sh\nprintf 'ENV DISPLAY=%s DBUS=%s\\n' \"$DISPLAY\" \"$DBUS_SESSION_BUS_ADDRESS\" >> '{log}'\nprintf 'OK\\n'\nwhile IFS= read -r line; do\n printf '%s\\n' \"$line\" >> '{log}'\n if test \"$line\" = CONFIRM; then\n  n=0; while ! test -e '{release}' && test \"$n\" -lt 200; do sleep 0.05; n=$((n+1)); done\n fi\n printf 'OK\\n'\ndone\n", log=log.display(),release=release.display())).unwrap();
+    let mut request = Command::new("gpg-connect-agent");
+    h.env(&mut request);
+    let sign = request
+        .args([
+            "--no-autostart",
+            "OPTION putenv=DISPLAY=:99",
+            "OPTION putenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/attacker-bus",
+            "OPTION ttyname=/dev/pts/77",
+            "SETKEYDESC FirstRequest",
+            &format!("SIGKEY {grip}"),
+            &format!("SETHASH 8 {}", "00".repeat(32)),
+            "PKSIGN",
+            "/bye",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !fs::read_to_string(&log)
+        .unwrap_or_default()
+        .contains("CONFIRM\n")
+    {
+        assert!(started.elapsed() < Duration::from_secs(5));
+        thread::sleep(Duration::from_millis(20));
+    }
+    let started = Instant::now();
+    success(connect(&h, &["HAVEKEY --list"]));
+    success(h.cli("status"));
+    success(h.cli("lock"));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "public queries blocked during prompt"
+    );
+    fs::write(release, b"").unwrap();
+    let signed = sign.wait_with_output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&signed.stdout).contains("ERR"),
+        "locking must cancel the pending approval"
+    );
+    let prompts = fs::read_to_string(log).unwrap();
+    let routing = prompts
+        .lines()
+        .filter(|line| line.starts_with("ENV ") || line.starts_with("OPTION "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!routing.contains(":99"), "{routing}");
+    assert!(!routing.contains("attacker-bus"), "{routing}");
+    assert!(!routing.contains("/dev/pts/77"), "{routing}");
+    let no_key = connect(
+        &h,
+        &[
+            &format!("SIGKEY {}", "00".repeat(20)),
+            &format!("SETHASH 8 {}", "00".repeat(32)),
+            "PKSIGN",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&no_key.stdout).contains("ERR 67108881"));
+}
+
+#[test]
 fn offline_primary_stub_keeps_usable_signing_and_decryption_subkeys() {
     let mut h = Harness::new();
     h.generator(
@@ -438,6 +520,89 @@ fn unknown_grip_does_not_unlock_and_uses_agent_error_source() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("ERR 67108881"));
     assert!(fs::read(h.dir.path().join("prompts")).unwrap().is_empty());
+}
+
+#[test]
+fn public_queries_and_lock_continue_during_slow_webdav() {
+    use std::io::BufRead;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    let mut h = Harness::new();
+    h.generator(
+        &[
+            "--quick-gen-key",
+            "Sync <sync@example.org>",
+            "ed25519",
+            "sign",
+            "never",
+        ],
+        b"",
+    );
+    let secret = h.generator(&["--export-secret-keys"], b"");
+    let public = h.generator(&["--export"], b"");
+    h.start(&secret, &public);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+        }
+        started_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        use std::io::Write;
+        stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+    });
+    let path = h.dir.path().join("config/signet/config.toml");
+    let mut config = fs::read_to_string(&path).unwrap();
+    config.push_str(&format!("\n[webdav]\nurl = 'http://{address}/vault.kdbx'\nusername = 'test'\npassword_command = 'printf pw'\nsync_interval = '0s'\n"));
+    fs::write(path, config).unwrap();
+    let mut control =
+        std::os::unix::net::UnixStream::connect(h.dir.path().join("runtime/signet/control"))
+            .unwrap();
+    control.write_all(b"{\"command\":\"reload\"}\n").unwrap();
+    let mut response = String::new();
+    std::io::BufReader::new(control)
+        .read_line(&mut response)
+        .unwrap();
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["ok"], true, "{response}");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_signet"));
+    h.env(&mut command);
+    let syncing = command
+        .arg("sync")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let started = Instant::now();
+    success(connect(&h, &["HAVEKEY --list"]));
+    success(h.cli("status"));
+    success(h.cli("lock"));
+    let elapsed = started.elapsed();
+    let _ = release_tx.send(());
+    assert!(!syncing.wait_with_output().unwrap().status.success());
+    server.join().unwrap();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "queries blocked behind network for {elapsed:?}"
+    );
+    let status: serde_json::Value = serde_json::from_slice(&success(h.cli("status"))).unwrap();
+    assert_eq!(status["locked"], true, "sync must not re-unlock after lock");
 }
 
 #[test]

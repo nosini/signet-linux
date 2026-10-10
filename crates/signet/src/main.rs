@@ -175,7 +175,6 @@ fn main() -> Result<()> {
             agent::run(config)
         }
         Action::Import { files } => {
-            let _lock = signet_vault::lock(&config.vault)?;
             let mut vault = open(&config)?;
             for file in files {
                 let bytes = Zeroizing::new(fs::read(file)?);
@@ -189,9 +188,10 @@ fn main() -> Result<()> {
                     println!("{} {}", key.fingerprint, prompt::sanitize(&key.title));
                 }
             }
+            let guard = signet_vault::lock(&config.vault)?;
             vault.save_locked()?;
             agent::update_index(&vault, &config)?;
-            drop(_lock);
+            drop(guard);
             notify();
             Ok(())
         }
@@ -207,12 +207,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Action::Remove { fingerprint } => {
-            let _lock = signet_vault::lock(&config.vault)?;
             let mut vault = open(&config)?;
             vault.remove(&fingerprint.parse()?)?;
+            let guard = signet_vault::lock(&config.vault)?;
             vault.save_locked()?;
             agent::update_index(&vault, &config)?;
-            drop(_lock);
+            drop(guard);
             notify();
             Ok(())
         }
