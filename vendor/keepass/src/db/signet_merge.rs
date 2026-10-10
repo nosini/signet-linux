@@ -149,7 +149,7 @@ pub fn merge(local: &mut Database, remote: &Database) -> Result<(), MergeError> 
                 if current != previous {
                     add_history(&mut history, previous);
                 }
-                history.sort_by_key(|e| std::cmp::Reverse(e.times.last_modification));
+                history.sort_by_key(|e| e.times.last_modification);
                 entry.history = Some(History { entries: history });
                 entry.parent = location.parent;
                 entry.previous_parent_group = location.previous_parent_group;

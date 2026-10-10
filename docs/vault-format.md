@@ -49,7 +49,7 @@ for the current vault session from the approval screen.
 When Signet changes a key entry it:
 
 - keeps the entry's UUID, other fields, attachments, tags and history;
-- writes the previous version to the entry history;
+- writes the previous version to the entry history, ordered oldest first;
 - updates the entry's last modification time;
 - regenerates `gpg_publicKeyArmored` and `gpg_fingerprint` from the secret
   key, so the three fields always describe the same key.

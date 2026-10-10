@@ -17,7 +17,9 @@ impl History {
         // an exponential number of history entries.
         entry.history.take();
 
-        self.entries.insert(0, entry);
+        self.entries.push(entry);
+        self.entries
+            .sort_by_key(|item| item.times.last_modification);
     }
 
     /// Get the history entries
