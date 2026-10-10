@@ -105,6 +105,8 @@ fn hosted_agent_and_file_setup() {
     handle.unlock().unwrap();
     handle.remove(&fp).unwrap();
     assert!(handle.keys().unwrap().is_empty());
+    // An empty vault still gets a GnuPG home; gpg itself rejects empty input.
+    handle.setup_gnupg().unwrap();
     assert!(!Vault::open(&source, creds).unwrap().keys().is_empty());
     stop.store(true, Ordering::Relaxed);
     serving.join().unwrap();

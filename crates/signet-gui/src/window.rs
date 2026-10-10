@@ -166,6 +166,11 @@ impl Window {
             this,
             move |_| {
                 this.run("GnuPG is ready. Copy GNUPGHOME for your shell.", |h| {
+                    if h.keys()?.is_empty() {
+                        anyhow::bail!(
+                            "The vault has no keys yet. Import a key first; Signet sets up GnuPG after each import."
+                        );
+                    }
                     h.setup_gnupg().map(|_| ())
                 });
             }

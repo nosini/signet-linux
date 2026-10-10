@@ -161,10 +161,24 @@ fn gpg(config: &Config, args: &[&str], input: &[u8]) -> Result<()> {
         .arg(&config.gnupg_home)
         .args(args)
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
-    child.stdin.take().context("gpg stdin")?.write_all(input)?;
-    if !child.wait()?.success() {
-        bail!("gpg {} failed", args.join(" "));
+    let mut stdin = child.stdin.take().context("gpg stdin")?;
+    // Write from another thread so a full stderr pipe can't block both sides.
+    let output = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(input));
+        let output = child.wait_with_output();
+        let written = writer.join().expect("gpg stdin writer panicked");
+        let output = output?;
+        if output.status.success() {
+            written?;
+        }
+        anyhow::Ok(output)
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("gpg {} failed: {}", args.join(" "), stderr.trim());
     }
     Ok(())
 }
@@ -181,12 +195,17 @@ pub fn setup_gnupg(config: &Config, keys: &[KeyEntry]) -> Result<PathBuf> {
             trust.push_str(&format!("{}:6:\n", key.fingerprint.to_hex()));
         }
     }
-    gpg(config, &["--batch", "--import"], &public)?;
-    gpg(
-        config,
-        &["--batch", "--import-ownertrust"],
-        trust.as_bytes(),
-    )?;
+    // gpg rejects empty input, and an empty vault has nothing to import.
+    if !public.is_empty() {
+        gpg(config, &["--batch", "--import"], &public)?;
+    }
+    if !trust.is_empty() {
+        gpg(
+            config,
+            &["--batch", "--import-ownertrust"],
+            trust.as_bytes(),
+        )?;
+    }
     Ok(socket)
 }
 

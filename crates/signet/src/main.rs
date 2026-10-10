@@ -186,7 +186,11 @@ fn main() -> Result<()> {
         }
         Action::SetupGnupg => {
             let vault = open(&config)?;
-            let socket = manage::setup_gnupg(&config, &vault.keys())?;
+            let keys = vault.keys();
+            let socket = manage::setup_gnupg(&config, &keys)?;
+            if keys.is_empty() {
+                eprintln!("The vault has no keys yet; run `signet import` to add one.");
+            }
             println!("{}", manage::gnupghome_export(&config));
             println!("Agent socket: {}", socket.display());
             Ok(())
