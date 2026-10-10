@@ -246,7 +246,14 @@ pub fn prepare_home(config: &Config) -> Result<PathBuf> {
         false,
     )?;
     use std::os::unix::ffi::OsStringExt;
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(path)))
+    let socket = PathBuf::from(std::ffi::OsString::from_vec(path));
+    let runtime = PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
+    if runtime.is_dir() && socket.parent() == Some(config.gnupg_home.as_path()) {
+        bail!(
+            "GnuPG fell back to a home socket; create the runtime gnupg directory before starting Signet"
+        );
+    }
+    Ok(socket)
 }
 struct Socket {
     listener: UnixListener,

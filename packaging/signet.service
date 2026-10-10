@@ -15,7 +15,9 @@ ProtectHome=read-only
 ReadWritePaths=-%h/.local/share/signet -%h/.local/state/signet -%t/signet -%t/gnupg
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=yes
-RuntimeDirectory=signet
+RuntimeDirectory=signet gnupg
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 StateDirectory=signet
 UMask=0077
 
