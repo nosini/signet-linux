@@ -2,7 +2,7 @@
 use keepass::{Database, DatabaseKey, db::Times};
 use signet_vault::{
     Credentials, Vault,
-    sync::{SyncError, SyncOutcome, WebDavConfig, sync},
+    sync::{SyncError, SyncOutcome, WebDavConfig, download, sync},
 };
 use std::{
     sync::{
@@ -369,4 +369,45 @@ fn remote_only_change_rejects_unrelated_root() {
     let vault = Vault::open(&work.local(), work.creds.clone()).unwrap();
     assert_eq!(vault.database.iter_all_entries().count(), 1);
     assert_eq!(vault.database.root().id(), local_root);
+}
+#[test]
+fn download_sets_up_a_second_device_that_syncs() {
+    let work = Working::new();
+    let dav = Dav::new(None, true);
+    assert!(matches!(
+        download(&dav.config(), &work.creds),
+        Err(SyncError::NotFound)
+    ));
+    work.run(&dav).unwrap();
+    let wrong = Credentials {
+        password: Some(Zeroizing::new("wrong".into())),
+        keyfile: None,
+    };
+    assert!(matches!(
+        download(&dav.config(), &wrong),
+        Err(SyncError::RemoteCredentials)
+    ));
+    let second = tempfile::tempdir().unwrap();
+    let local = second.path().join("vault.kdbx");
+    std::fs::write(&local, download(&dav.config(), &work.creds).unwrap()).unwrap();
+    let state = second.path().join("state.json");
+    assert_eq!(
+        sync(&local, &state, &dav.config(), &work.creds).unwrap(),
+        SyncOutcome::UpToDate
+    );
+    work.change("from the first device");
+    work.run(&dav).unwrap();
+    sync(&local, &state, &dav.config(), &work.creds).unwrap();
+    assert!(
+        Vault::open(&local, work.creds.clone())
+            .unwrap()
+            .database
+            .iter_all_entries()
+            .any(|e| e.get_title() == Some("from the first device"))
+    );
+    dav.state.lock().unwrap().status = Some(401);
+    assert!(matches!(
+        download(&dav.config(), &work.creds),
+        Err(SyncError::Auth(401))
+    ));
 }

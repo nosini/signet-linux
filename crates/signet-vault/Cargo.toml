@@ -11,6 +11,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 hex = "0.4.3"
 keepass = { version = "0.15", features = ["save_kdbx4"] }
 libc = "0.2"
+openssl = "0.10"
 rust-argon2 = "3"
 tempfile = "3.27.0"
 sequoia-openpgp = { version = "2", default-features = false, features = ["crypto-openssl", "compression"] }

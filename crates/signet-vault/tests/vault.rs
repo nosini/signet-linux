@@ -54,6 +54,109 @@ fn protect(cert: Cert, password: &str) -> Cert {
 }
 
 #[test]
+fn gnupg_fixed_width_ed25519_secret_import() {
+    let cert = Cert::from_bytes(include_bytes!("fixtures/gpg-ed25519-protected.asc")).unwrap();
+    let mut attempts = 0;
+    let unlocked = signet_vault::unlock_cert(cert.clone(), &mut || {
+        attempts += 1;
+        Some(Zeroizing::new(
+            if attempts == 1 {
+                "wrong"
+            } else {
+                "import-test"
+            }
+            .into(),
+        ))
+    })
+    .unwrap();
+    assert_eq!(attempts, 2);
+    assert!(
+        unlocked
+            .keys()
+            .secret()
+            .all(|k| !k.key().secret().is_encrypted())
+    );
+    // Confirm that normalization preserves the secret corresponding to the public key.
+    let mut signer = unlocked
+        .primary_key()
+        .key()
+        .clone()
+        .parts_into_secret()
+        .unwrap()
+        .into_keypair()
+        .unwrap();
+    let signature = sequoia_openpgp::packet::signature::SignatureBuilder::new(
+        sequoia_openpgp::types::SignatureType::Binary,
+    )
+    .sign_message(&mut signer, b"legacy secret import")
+    .unwrap();
+    signature
+        .verify_message(unlocked.primary_key().key(), b"legacy secret import")
+        .unwrap();
+    attempts = 0;
+    assert!(
+        signet_vault::unlock_cert(cert, &mut || {
+            attempts += 1;
+            Some(Zeroizing::new("wrong".into()))
+        })
+        .is_err()
+    );
+    assert_eq!(attempts, 3);
+}
+
+#[test]
+fn gnupg_fixed_width_cv25519_secret_import() {
+    use sequoia_openpgp::{
+        crypto::SessionKey,
+        packet::{key, pkesk::PKESK3},
+        types::SymmetricAlgorithm,
+    };
+    let cert = Cert::from_bytes(include_bytes!("fixtures/gpg-25519-protected.asc")).unwrap();
+    let mut prompts = 0;
+    let unlocked = signet_vault::unlock_cert(cert.clone(), &mut || {
+        prompts += 1;
+        Some(Zeroizing::new("import-test".into()))
+    })
+    .unwrap();
+    assert_eq!(prompts, 1, "both keys should reuse the import passphrase");
+    let subkey = unlocked.keys().secret().nth(1).unwrap();
+    let session_key = SessionKey::new(32).unwrap();
+    let packet =
+        PKESK3::for_recipient(SymmetricAlgorithm::AES256, &session_key, subkey.key()).unwrap();
+    let mut decryptor = subkey.key().clone().into_keypair().unwrap();
+    let (algorithm, recovered) = packet
+        .decrypt(&mut decryptor, Some(SymmetricAlgorithm::AES256))
+        .unwrap();
+    assert_eq!(algorithm, SymmetricAlgorithm::AES256);
+    assert_eq!(session_key, recovered);
+
+    // Correct passphrases must not bypass a corrupted checksum in the fallback.
+    let subkey = cert.keys().secret().nth(1).unwrap().key().clone();
+    let key::SecretKeyMaterial::Encrypted(encrypted) = subkey.secret() else {
+        panic!("encrypted fixture")
+    };
+    let mut ciphertext = encrypted.ciphertext().unwrap().to_vec();
+    *ciphertext.last_mut().unwrap() ^= 1;
+    let damaged = key::Encrypted::new(
+        encrypted.s2k().clone(),
+        encrypted.algo(),
+        encrypted.checksum(),
+        ciphertext.into_boxed_slice(),
+    );
+    let subkey = subkey
+        .add_secret(key::SecretKeyMaterial::Encrypted(damaged))
+        .0;
+    let damaged = cert
+        .insert_packets([Packet::SecretSubkey(subkey.role_into_subordinate())])
+        .unwrap()
+        .0;
+    assert!(
+        signet_vault::unlock_cert(damaged, &mut || Some(Zeroizing::new("import-test".into())))
+            .is_err()
+    );
+}
+
+#[test]
 fn import_history_protection_delete_and_stale_save() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("vault.kdbx");

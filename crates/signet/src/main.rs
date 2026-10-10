@@ -1,19 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-mod agent;
-mod assuan;
-mod config;
-mod crypto;
-mod keygrip;
-mod prompt;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use config::Config;
+use signet::{agent, config::Config, manage, prompt};
 use signet_vault::Vault;
 use std::{
     fs,
     io::{self, Write},
     path::PathBuf,
-    process::{Command, Stdio},
+    sync::Arc,
 };
 use zeroize::Zeroizing;
 #[derive(Parser)]
@@ -89,19 +83,6 @@ fn notify() {
         let _ = agent::control("sync");
     }
 }
-fn gpg(config: &Config, args: &[&str], input: &[u8]) -> Result<()> {
-    let mut child = Command::new("gpg")
-        .arg("--homedir")
-        .arg(&config.gnupg_home)
-        .args(args)
-        .stdin(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().context("gpg stdin")?.write_all(input)?;
-    if !child.wait()?.success() {
-        bail!("gpg {} failed", args.join(" "));
-    }
-    Ok(())
-}
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -109,23 +90,7 @@ fn main() -> Result<()> {
         .init();
     let command = Cli::parse().command;
     if let Action::Init { vault, keyfile } = command {
-        if config::config_path().exists() {
-            bail!(
-                "Signet is already configured at {}",
-                config::config_path().display()
-            );
-        }
-        let mut config = Config::default();
-        if let Some(vault) = vault {
-            let parent = vault
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| std::path::Path::new("."));
-            fs::create_dir_all(parent)?;
-            config.vault = fs::canonicalize(parent)?
-                .join(vault.file_name().context("vault path must name a file")?);
-        }
-        config.keyfile = keyfile.map(fs::canonicalize).transpose()?;
+        let config = manage::new_config(vault.as_deref(), keyfile.as_deref())?;
         let existing = config.vault.exists();
         let first = password(if existing {
             "Vault master password (empty for keyfile only): "
@@ -141,14 +106,7 @@ fn main() -> Result<()> {
                 bail!("passwords do not match");
             }
         }
-        let credentials = config.credentials(if first.is_empty() { None } else { Some(first) });
-        let vault = if existing {
-            Vault::open(&config.vault, credentials)?
-        } else {
-            Vault::create(&config.vault, credentials)?
-        };
-        agent::update_index(&vault, &config)?;
-        config.write()?;
+        manage::initialize(&config, first)?;
         println!(
             "{} {}",
             if existing { "Connected to" } else { "Created" },
@@ -172,7 +130,7 @@ fn main() -> Result<()> {
             if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            agent::run(config)
+            agent::run(config, Arc::new(prompt::PinentryPrompter))
         }
         Action::Import { files } => {
             let mut vault = open(&config)?;
@@ -227,69 +185,34 @@ fn main() -> Result<()> {
             Ok(())
         }
         Action::SetupGnupg => {
-            let socket = agent::prepare_home(&config)?;
             let vault = open(&config)?;
-            let mut trust = String::new();
-            let mut public = Vec::new();
-            for key in vault.keys() {
-                public.extend(signet_vault::public_armor(&key.cert)?.as_bytes());
-                if key.secret != signet_vault::SecretState::None {
-                    trust.push_str(&format!("{}:6:\n", key.fingerprint.to_hex()));
-                }
-            }
-            gpg(&config, &["--batch", "--import"], &public)?;
-            gpg(
-                &config,
-                &["--batch", "--import-ownertrust"],
-                trust.as_bytes(),
-            )?;
-            println!(
-                "export GNUPGHOME='{}'",
-                config
-                    .gnupg_home
-                    .display()
-                    .to_string()
-                    .replace('\'', "'\\''")
-            );
+            let socket = manage::setup_gnupg(&config, &vault.keys())?;
+            println!("{}", manage::gnupghome_export(&config));
             println!("Agent socket: {}", socket.display());
             Ok(())
         }
         Action::Webdav {
             command: Webdav::Set { url, user },
         } => {
-            let check = signet_vault::sync::WebDavConfig {
+            signet_vault::sync::WebDavConfig {
                 url: url.clone(),
                 username: user.clone(),
                 password: None,
-            };
-            check.validate()?;
-            if let Some(user) = &user {
-                let password = password("WebDAV password: ")?;
-                config::webdav_entry(&url,user)?.set_password(&password).context("cannot save password in Secret Service; set webdav.password_command in config.toml instead")?;
             }
-            let mut webdav = config.webdav.take().unwrap_or(config::WebDav {
-                url: url.clone(),
-                username: None,
-                password_command: None,
-                sync_interval: "10m".into(),
-            });
-            webdav.url = url;
-            webdav.username = user;
-            config.webdav = Some(webdav);
-            config.write()?;
+            .validate()?;
+            let password = if user.is_some() {
+                Some(password("WebDAV password: ")?)
+            } else {
+                None
+            };
+            manage::set_webdav(&mut config, url, user, password)?;
             let _ = agent::control("reload");
             Ok(())
         }
         Action::Webdav {
             command: Webdav::Clear,
         } => {
-            if let Some(webdav) = &config.webdav
-                && let Some(user) = &webdav.username
-            {
-                let _ = config::webdav_entry(&webdav.url, user)?.delete_credential();
-            }
-            config.webdav = None;
-            config.write()?;
+            manage::clear_webdav(&mut config)?;
             let _ = agent::control("reload");
             Ok(())
         }

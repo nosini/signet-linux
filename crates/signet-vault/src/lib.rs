@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! OpenPGP key storage in a KeePass database.
+mod legacy_secret;
 pub mod merge;
 pub mod sync;
 
@@ -412,22 +413,26 @@ pub fn unlock_cert(
         let mut unlocked = key.key().clone();
         if unlocked.secret().is_encrypted()
             && let Some(password) = &cached_passphrase
-            && let Ok(key) = unlocked
-                .clone()
-                .decrypt_secret(&Password::from(password.as_str()))
+            && let Ok(key) =
+                legacy_secret::decrypt(unlocked.clone(), &Password::from(password.as_str()))
         {
             unlocked = key;
         }
         if unlocked.secret().is_encrypted() {
-            loop {
+            for attempt in 0..3 {
                 let password = prompt().ok_or(VaultError::Cancelled)?;
-                if let Ok(k) = unlocked
-                    .clone()
-                    .decrypt_secret(&Password::from(password.as_str()))
-                {
-                    unlocked = k;
-                    cached_passphrase = Some(password);
-                    break;
+                match legacy_secret::decrypt(unlocked.clone(), &Password::from(password.as_str())) {
+                    Ok(k) => {
+                        unlocked = k;
+                        cached_passphrase = Some(password);
+                        break;
+                    }
+                    Err(error) if attempt == 2 => {
+                        return Err(pgp_error(error.context(
+                            "cannot unlock secret key after three attempts; check its passphrase and OpenPGP format",
+                        )));
+                    }
+                    Err(_) => {}
                 }
             }
         }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/signet-vault", "crates/signet"]
+members = ["crates/signet-vault", "crates/signet", "crates/signet-gui"]
 
 [workspace.package]
 version = "0.1.0"

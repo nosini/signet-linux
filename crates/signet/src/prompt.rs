@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use crate::assuan;
+use crate::{assuan, config::Config};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -17,10 +17,26 @@ pub fn sanitize(value: &str) -> String {
 }
 #[derive(Clone)]
 pub struct Caller {
-    pub description: String,
+    /// Sanitized descriptions of the requesting process and its parents.
+    pub chain: Vec<String>,
     pub executables: Vec<PathBuf>,
 }
+impl Caller {
+    pub fn description(&self) -> String {
+        self.chain.join(" via ")
+    }
+}
+/// Shown when the kernel reports no peer process, which happens for clients
+/// outside the agent's PID namespace, such as host programs talking to a
+/// Flatpak.
+pub const UNIDENTIFIED: &str = "a program Signet cannot identify from inside its sandbox";
 pub fn caller(mut pid: u32) -> Caller {
+    if pid == 0 {
+        return Caller {
+            chain: vec![UNIDENTIFIED.into()],
+            executables: Vec::new(),
+        };
+    }
     let mut descriptions = Vec::new();
     let mut executables = Vec::new();
     for _ in 0..6 {
@@ -63,7 +79,7 @@ pub fn caller(mut pid: u32) -> Caller {
         pid = parent;
     }
     Caller {
-        description: descriptions.join(" via "),
+        chain: descriptions,
         executables,
     }
 }
@@ -189,49 +205,68 @@ impl Pinentry {
         self.response()
     }
 }
-pub fn password(binary: &str, options: &Options) -> Result<Zeroizing<String>> {
-    let mut pinentry = Pinentry::open(binary, options)?;
-    pinentry.command("SETDESC", "Unlock the Signet KeePass vault")?;
-    pinentry.command("SETPROMPT", "Master password:")?;
-    let bytes = pinentry.command("GETPIN", "")?;
-    Ok(Zeroizing::new(std::str::from_utf8(&bytes)?.to_string()))
+/// What the user is asked to allow. Text fields come from the vault or the
+/// client and must be passed through [`sanitize`] before display.
+pub struct ApprovalRequest<'a> {
+    pub operation: &'a str,
+    pub title: &'a str,
+    pub fingerprint: &'a str,
+    pub caller: &'a Caller,
+    pub description: &'a str,
 }
-pub fn approve(
-    binary: &str,
-    options: &Options,
-    operation: &str,
-    title: &str,
-    fingerprint: &str,
-    caller: &Caller,
-    description: &str,
-) -> Result<()> {
-    let fingerprint = fingerprint
-        .as_bytes()
-        .chunks(4)
-        .map(|b| String::from_utf8_lossy(b).to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut text = format!(
-        "Allow {operation}?\nFingerprint: {}\nKey: {}\nRequesting programs: {}\nProcess descriptions are not verified identities.",
-        sanitize(&fingerprint),
-        sanitize(title),
-        caller.description
-    );
-    if !description.is_empty() {
-        text.push_str(&format!("\nRequest details: {}", sanitize(description)));
+impl ApprovalRequest<'_> {
+    /// The fingerprint in groups of four characters.
+    pub fn grouped_fingerprint(&self) -> String {
+        self.fingerprint
+            .as_bytes()
+            .chunks(4)
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
-    // Confirmation is authorization: clients must not choose its display or terminal.
-    let _ = options;
-    let mut trusted = Options::new();
-    if let Ok(tty) = std::env::var("GPG_TTY") {
-        trusted.insert("ttyname".into(), tty);
+}
+/// Asks the user for the vault password and for approval of key use.
+pub trait Prompter: Send + Sync {
+    fn password(&self, config: &Config, options: &Options) -> Result<Zeroizing<String>>;
+    /// Returns an error unless the user allowed the operation.
+    fn approve(&self, config: &Config, request: &ApprovalRequest) -> Result<()>;
+}
+/// Prompts through the pinentry program named in the configuration.
+pub struct PinentryPrompter;
+impl Prompter for PinentryPrompter {
+    fn password(&self, config: &Config, options: &Options) -> Result<Zeroizing<String>> {
+        let mut pinentry = Pinentry::open(&config.pinentry, options)?;
+        pinentry.command("SETDESC", "Unlock the Signet KeePass vault")?;
+        pinentry.command("SETPROMPT", "Master password:")?;
+        let bytes = pinentry.command("GETPIN", "")?;
+        Ok(Zeroizing::new(std::str::from_utf8(&bytes)?.to_string()))
     }
-    let mut pinentry = Pinentry::open(binary, &trusted)?;
-    pinentry.command("SETDESC", &text)?;
-    pinentry.command("SETOK", "Allow")?;
-    pinentry.command("SETCANCEL", "Deny")?;
-    pinentry.command("CONFIRM", "")?;
-    Ok(())
+    fn approve(&self, config: &Config, request: &ApprovalRequest) -> Result<()> {
+        let mut text = format!(
+            "Allow {}?\nFingerprint: {}\nKey: {}\nRequesting programs: {}\nProcess descriptions are not verified identities.",
+            request.operation,
+            sanitize(&request.grouped_fingerprint()),
+            sanitize(request.title),
+            request.caller.description()
+        );
+        if !request.description.is_empty() {
+            text.push_str(&format!(
+                "\nRequest details: {}",
+                sanitize(request.description)
+            ));
+        }
+        // Confirmation is authorization: clients must not choose its display or terminal.
+        let mut trusted = Options::new();
+        if let Ok(tty) = std::env::var("GPG_TTY") {
+            trusted.insert("ttyname".into(), tty);
+        }
+        let mut pinentry = Pinentry::open(&config.pinentry, &trusted)?;
+        pinentry.command("SETDESC", &text)?;
+        pinentry.command("SETOK", "Allow")?;
+        pinentry.command("SETCANCEL", "Deny")?;
+        pinentry.command("CONFIRM", "")?;
+        Ok(())
+    }
 }
 #[cfg(test)]
 mod tests {

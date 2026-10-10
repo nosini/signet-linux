@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>eu.nosini.Signet</id>
+  <name>Signet</name>
+  <summary>Keep OpenPGP keys in an encrypted vault</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="eu.nosini"><name>nosini</name></developer>
+  <description>
+    <p>Signet stores OpenPGP keys in a KeePass vault and asks before signing or decrypting. Use your keys with GnuPG and Git while keeping secret key material inside the encrypted vault.</p>
+    <p>Create a vault, open an existing file, or download one from WebDAV. Import keys, share public certificates, and sync the same vault with Signet for Android.</p>
+    <p>Signet locks after an idle period and lets you approve each use of a key. The app runs in the background after its window closes.</p>
+  </description>
+  <launchable type="desktop-id">eu.nosini.Signet.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image type="source" width="760" height="640">https://raw.githubusercontent.com/nosini/signet-linux/main/data/screenshot.png</image>
+      <caption>Manage OpenPGP keys in your encrypted vault</caption>
+    </screenshot>
+  </screenshots>
+  <provides><binary>signet-gui</binary><binary>signet</binary></provides>
+  <url type="homepage">https://github.com/nosini/signet-linux</url>
+  <url type="bugtracker">https://github.com/nosini/signet-linux/issues</url>
+  <url type="vcs-browser">https://github.com/nosini/signet-linux</url>
+  <branding><color type="primary" scheme_preference="light">#183B38</color><color type="primary" scheme_preference="dark">#183B38</color></branding>
+  <content_rating type="oars-1.1"/>
+  <releases><release version="0.1.0" date="2026-10-10"/></releases>
+</component>

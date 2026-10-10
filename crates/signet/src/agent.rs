@@ -4,7 +4,7 @@ use crate::{
     config::{self, Config},
     crypto,
     keygrip::Keygrip,
-    prompt::{self, Options},
+    prompt::{self, ApprovalRequest, Options, Prompter},
 };
 use anyhow::{Context, Result, bail};
 use sequoia_openpgp::{crypto::KeyPair, types::HashAlgorithm};
@@ -106,6 +106,7 @@ struct State {
     generation: u64,
     prompting: Arc<Mutex<()>>,
     syncing: Arc<Mutex<()>>,
+    prompter: Arc<dyn Prompter>,
 }
 impl State {
     fn lock(&mut self) {
@@ -116,7 +117,7 @@ impl State {
 }
 
 fn unlock_shared(shared: &Arc<Mutex<State>>, options: &Options) -> Result<()> {
-    let (config, epoch, prompting) = {
+    let (config, epoch, prompting, prompter) = {
         let mut state = shared
             .lock()
             .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
@@ -128,6 +129,7 @@ fn unlock_shared(shared: &Arc<Mutex<State>>, options: &Options) -> Result<()> {
             state.config.clone(),
             state.generation,
             state.prompting.clone(),
+            state.prompter.clone(),
         )
     };
     let guard = prompting
@@ -153,7 +155,7 @@ fn unlock_shared(shared: &Arc<Mutex<State>>, options: &Options) -> Result<()> {
         Some(vault) => vault,
         None => Vault::open(
             &config.vault,
-            config.credentials(Some(prompt::password(&config.pinentry, options)?)),
+            config.credentials(Some(prompter.password(&config, options)?)),
         )?,
     };
     let cache = build_cache(&vault);
@@ -296,7 +298,7 @@ fn pair_shared(
         operation.to_owned(),
         caller.executables.clone(),
     );
-    let (config, key, epoch, prompting) = {
+    let (config, key, epoch, prompting, prompter) = {
         let state = shared
             .lock()
             .map_err(|_| anyhow::anyhow!("agent state poisoned"))?;
@@ -311,6 +313,7 @@ fn pair_shared(
             key,
             state.generation,
             state.prompting.clone(),
+            state.prompter.clone(),
         )
     };
     let _guard = prompting
@@ -323,20 +326,24 @@ fn pair_shared(
         if state.generation != epoch || state.vault.is_none() {
             bail!("vault was locked before approval");
         }
-        state
-            .approvals
-            .get(&approval)
-            .is_some_and(|when| when.elapsed() < config.remember_duration().unwrap_or_default())
+        !caller.executables.is_empty()
+            && state
+                .approvals
+                .get(&approval)
+                .is_some_and(|when| when.elapsed() < config.remember_duration().unwrap_or_default())
     };
     if !remembered {
-        prompt::approve(
-            &config.pinentry,
-            options,
-            operation,
-            &key.title,
-            &key.fingerprint,
-            caller,
-            description,
+        // Confirmation is authorization: client options never reach the prompt.
+        let _ = options;
+        prompter.approve(
+            &config,
+            &ApprovalRequest {
+                operation,
+                title: &key.title,
+                fingerprint: &key.fingerprint,
+                caller,
+                description,
+            },
         )?;
     }
     let mut state = shared
@@ -361,7 +368,7 @@ fn pair_shared(
                 .map(|key| key.key().clone().into_keypair())
         })
         .context("secret key unavailable")??;
-    if !config.remember_duration()?.is_zero() {
+    if !caller.executables.is_empty() && !config.remember_duration()?.is_zero() {
         state.approvals.insert(approval, Instant::now());
     }
     state.used = Instant::now();
@@ -461,87 +468,315 @@ fn peer(stream: &UnixStream) -> Result<u32> {
     }
     Ok(credentials.pid as u32)
 }
-pub fn run(config: Config) -> Result<()> {
-    let socket = prepare_home(&config)?;
-    let agent_socket = Socket::bind(&socket)?;
-    let control_socket = Socket::bind(&config::control_path())?;
-    let output = Command::new("gpgconf").arg("--version").output()?;
-    let version = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().last())
-        .unwrap_or("2.2.40")
-        .to_owned();
-    let cache = read_cache(&config);
-    let stop = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(State {
-        config,
-        vault: None,
-        cache,
-        used: Instant::now(),
-        synced: Instant::now(),
-        last_sync: None,
-        approvals: HashMap::new(),
-        socket,
-        version,
-        stopping: stop.clone(),
-        generation: 0,
-        prompting: Arc::new(Mutex::new(())),
-        syncing: Arc::new(Mutex::new(())),
-    }));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, stop.clone())?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, stop.clone())?;
-    tracing::info!(socket = %agent_socket.path.display(),"Signet agent listening");
-    while !stop.load(Ordering::Relaxed) {
-        for (socket, control) in [(&agent_socket, true), (&control_socket, false)] {
-            match socket.listener.accept() {
-                Ok((stream, _)) => {
-                    let state = state.clone();
-                    thread::spawn(move || {
-                        let result = if control {
-                            serve(stream, state)
-                        } else {
-                            serve_control(stream, state)
-                        };
-                        if let Err(error) = result {
-                            tracing::debug!(%error,"connection closed");
-                        }
+/// A bound agent. [`Agent::serve`] answers clients until stopped; a
+/// [`Handle`] gives the hosting process access to the same state.
+pub struct Agent {
+    agent_socket: Socket,
+    control_socket: Socket,
+    state: Arc<Mutex<State>>,
+    stop: Arc<AtomicBool>,
+}
+impl Agent {
+    /// Binds the GnuPG and control sockets. Fails if another agent is running.
+    pub fn start(config: Config, prompter: Arc<dyn Prompter>) -> Result<Self> {
+        let socket = prepare_home(&config)?;
+        let agent_socket = Socket::bind(&socket)?;
+        let control_socket = Socket::bind(&config::control_path())?;
+        let output = Command::new("gpgconf").arg("--version").output()?;
+        let version = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().last())
+            .unwrap_or("2.2.40")
+            .to_owned();
+        let cache = read_cache(&config);
+        let stop = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(State {
+            config,
+            vault: None,
+            cache,
+            used: Instant::now(),
+            synced: Instant::now(),
+            last_sync: None,
+            approvals: HashMap::new(),
+            socket,
+            version,
+            stopping: stop.clone(),
+            generation: 0,
+            prompting: Arc::new(Mutex::new(())),
+            syncing: Arc::new(Mutex::new(())),
+            prompter,
+        }));
+        Ok(Self {
+            agent_socket,
+            control_socket,
+            state,
+            stop,
+        })
+    }
+    pub fn handle(&self) -> Handle {
+        Handle {
+            shared: self.state.clone(),
+        }
+    }
+    /// Setting this flag makes [`Agent::serve`] lock the vault and return.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
+    pub fn serve(self) -> Result<()> {
+        let Self {
+            agent_socket,
+            control_socket,
+            state,
+            stop,
+        } = self;
+        tracing::info!(socket = %agent_socket.path.display(),"Signet agent listening");
+        while !stop.load(Ordering::Relaxed) {
+            for (socket, control) in [(&agent_socket, true), (&control_socket, false)] {
+                match socket.listener.accept() {
+                    Ok((stream, _)) => {
+                        let state = state.clone();
+                        thread::spawn(move || {
+                            let result = if control {
+                                serve(stream, state)
+                            } else {
+                                serve_control(stream, state)
+                            };
+                            if let Err(error) = result {
+                                tracing::debug!(%error,"connection closed");
+                            }
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => tracing::warn!(%error, "accept failed; retrying"),
+                }
+            }
+            let mut schedule_sync = false;
+            if let Ok(mut state) = state.try_lock() {
+                if state.vault.is_some() && state.used.elapsed() >= state.config.lock_duration()? {
+                    state.lock();
+                }
+                if state.vault.is_some()
+                    && let Some(webdav) = &state.config.webdav
+                {
+                    let interval = humantime::parse_duration(&webdav.sync_interval)?;
+                    if !interval.is_zero() && state.synced.elapsed() >= interval {
+                        state.synced = Instant::now();
+                        schedule_sync = true;
+                    }
+                }
+            }
+            if schedule_sync {
+                let shared = state.clone();
+                thread::spawn(move || {
+                    if let Err(error) = sync_shared(&shared) {
+                        tracing::warn!(%error, "periodic sync failed");
+                    }
+                });
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))?
+            .lock();
+        Ok(())
+    }
+}
+/// Runs the agent until SIGTERM or SIGINT.
+pub fn run(config: Config, prompter: Arc<dyn Prompter>) -> Result<()> {
+    let agent = Agent::start(config, prompter)?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, agent.stop_flag())?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, agent.stop_flag())?;
+    agent.serve()
+}
+/// Agent state as seen by the hosting process.
+#[derive(Clone, Debug)]
+pub struct Status {
+    pub locked: bool,
+    pub key_count: usize,
+    pub last_sync: Option<String>,
+    pub socket: PathBuf,
+    pub gnupg_home: PathBuf,
+    pub webdav: bool,
+}
+/// A key as listed by the agent. While locked only the keygrip index is
+/// available, so `user_ids` is empty and `secret` is unknown.
+#[derive(Clone, Debug)]
+pub struct KeyInfo {
+    pub fingerprint: String,
+    pub title: String,
+    pub user_ids: Vec<String>,
+    pub secret: Option<SecretState>,
+}
+impl KeyInfo {
+    fn from_entry(entry: &signet_vault::KeyEntry) -> Self {
+        Self {
+            fingerprint: entry.fingerprint.to_hex(),
+            title: prompt::sanitize(&entry.title),
+            user_ids: entry
+                .cert
+                .userids()
+                .map(|id| prompt::sanitize(&String::from_utf8_lossy(id.userid().value())))
+                .collect(),
+            secret: Some(entry.secret),
+        }
+    }
+}
+/// In-process access to a running agent. Methods block while prompting,
+/// syncing or writing the vault, so call them off the UI thread.
+#[derive(Clone)]
+pub struct Handle {
+    shared: Arc<Mutex<State>>,
+}
+impl Handle {
+    fn state(&self) -> Result<std::sync::MutexGuard<'_, State>> {
+        self.shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state poisoned"))
+    }
+    pub fn status(&self) -> Result<Status> {
+        let state = self.state()?;
+        Ok(Status {
+            locked: state.vault.is_none(),
+            key_count: state
+                .cache
+                .iter()
+                .map(|k| &k.fingerprint)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            last_sync: state.last_sync.clone(),
+            socket: state.socket.clone(),
+            gnupg_home: state.config.gnupg_home.clone(),
+            webdav: state.config.webdav.is_some(),
+        })
+    }
+    pub fn config(&self) -> Result<Config> {
+        Ok(self.state()?.config.clone())
+    }
+    pub fn lock(&self) -> Result<()> {
+        self.state()?.lock();
+        Ok(())
+    }
+    /// Unlocks through the agent's prompter.
+    pub fn unlock(&self) -> Result<()> {
+        unlock_shared(&self.shared, &Options::new())
+    }
+    pub fn sync(&self) -> Result<()> {
+        unlock_shared(&self.shared, &Options::new())?;
+        sync_shared(&self.shared)
+    }
+    /// Rereads the configuration file, keeping the vault unlocked when its
+    /// location and key file are unchanged.
+    pub fn reload(&self) -> Result<()> {
+        reload_shared(&self.shared)
+    }
+    pub fn keys(&self) -> Result<Vec<KeyInfo>> {
+        let state = self.state()?;
+        Ok(if let Some(vault) = &state.vault {
+            vault.keys().iter().map(KeyInfo::from_entry).collect()
+        } else {
+            let mut keys: Vec<KeyInfo> = Vec::new();
+            for key in &state.cache {
+                if !keys.iter().any(|k| k.fingerprint == key.fingerprint) {
+                    keys.push(KeyInfo {
+                        fingerprint: key.fingerprint.clone(),
+                        title: prompt::sanitize(&key.title),
+                        user_ids: Vec::new(),
+                        secret: None,
                     });
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => tracing::warn!(%error, "accept failed; retrying"),
             }
+            keys
+        })
+    }
+    /// Unlocks, applies `change` to a fresh copy of the vault and saves it
+    /// unless the file changed meanwhile, then republishes the result.
+    fn modify<T>(&self, change: impl FnOnce(&mut Vault) -> Result<T>) -> Result<T> {
+        unlock_shared(&self.shared, &Options::new())?;
+        let (config, credentials, epoch) = {
+            let state = self.state()?;
+            (
+                state.config.clone(),
+                state
+                    .vault
+                    .as_ref()
+                    .context("vault is locked")?
+                    .credentials()
+                    .clone(),
+                state.generation,
+            )
+        };
+        let mut vault = Vault::open(&config.vault, credentials)?;
+        let result = change(&mut vault)?;
+        {
+            let _guard = signet_vault::lock(&config.vault)?;
+            let state = self.state()?;
+            if state.generation != epoch {
+                bail!("vault was locked or reloaded during the change");
+            }
+            vault.save_locked()?;
+            update_index(&vault, &config)?;
         }
-        let mut schedule_sync = false;
-        if let Ok(mut state) = state.try_lock() {
-            if state.vault.is_some() && state.used.elapsed() >= state.config.lock_duration()? {
-                state.lock();
-            }
-            if state.vault.is_some()
-                && let Some(webdav) = &state.config.webdav
-            {
-                let interval = humantime::parse_duration(&webdav.sync_interval)?;
-                if !interval.is_zero() && state.synced.elapsed() >= interval {
-                    state.synced = Instant::now();
-                    schedule_sync = true;
-                }
-            }
-        }
-        if schedule_sync {
-            let shared = state.clone();
+        reload_shared(&self.shared)?;
+        if config.webdav.is_some() {
+            let shared = self.shared.clone();
             thread::spawn(move || {
                 if let Err(error) = sync_shared(&shared) {
-                    tracing::warn!(%error, "periodic sync failed");
+                    tracing::warn!(%error, "sync after a vault change failed");
                 }
             });
         }
-        thread::sleep(Duration::from_millis(25));
+        Ok(result)
     }
-    state
-        .lock()
-        .map_err(|_| anyhow::anyhow!("agent state poisoned"))?
-        .lock();
-    Ok(())
+    /// Imports OpenPGP keys. `passphrase` is asked for protected secret keys.
+    pub fn import(
+        &self,
+        data: &[u8],
+        passphrase: &mut dyn FnMut(
+            &signet_vault::ImportPrompt,
+        ) -> Option<zeroize::Zeroizing<String>>,
+    ) -> Result<Vec<KeyInfo>> {
+        self.modify(|vault| {
+            Ok(vault
+                .import(data, passphrase)?
+                .iter()
+                .map(KeyInfo::from_entry)
+                .collect())
+        })
+    }
+    pub fn remove(&self, fingerprint: &str) -> Result<()> {
+        let fingerprint = fingerprint.parse()?;
+        self.modify(|vault| Ok(vault.remove(&fingerprint)?))
+    }
+    /// The armored public certificate. Secret keys are never exported.
+    pub fn export_public(&self, fingerprint: &str) -> Result<String> {
+        let fingerprint = fingerprint.parse::<sequoia_openpgp::Fingerprint>()?;
+        unlock_shared(&self.shared, &Options::new())?;
+        let state = self.state()?;
+        let key = state
+            .vault
+            .as_ref()
+            .context("vault is locked")?
+            .keys()
+            .into_iter()
+            .find(|key| key.fingerprint == fingerprint)
+            .context("key not found")?;
+        Ok(signet_vault::public_armor(&key.cert)?)
+    }
+    /// Imports the vault's certificates and owner trust into the dedicated
+    /// GnuPG home.
+    pub fn setup_gnupg(&self) -> Result<PathBuf> {
+        unlock_shared(&self.shared, &Options::new())?;
+        let (config, keys) = {
+            let state = self.state()?;
+            (
+                state.config.clone(),
+                state.vault.as_ref().context("vault is locked")?.keys(),
+            )
+        };
+        crate::manage::setup_gnupg(&config, &keys)
+    }
 }
 #[derive(Default)]
 struct Session {

@@ -101,6 +101,47 @@ fn check_status(status: u16) -> Result<(), SyncError> {
         _ => Err(SyncError::Http(status)),
     }
 }
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .timeout_global(Some(Duration::from_secs(60)))
+        .build()
+        .into()
+}
+fn authorization(cfg: &WebDavConfig) -> Option<Zeroizing<String>> {
+    cfg.username.as_ref().map(|user| {
+        Zeroizing::new(format!(
+            "Basic {}",
+            STANDARD.encode(format!(
+                "{user}:{}",
+                cfg.password.as_ref().map(|p| p.as_str()).unwrap_or("")
+            ))
+        ))
+    })
+}
+/// Downloads the remote vault for a first setup and checks that `creds`
+/// open it. The caller stores the returned file as the local vault.
+pub fn download(cfg: &WebDavConfig, creds: &Credentials) -> Result<Vec<u8>, SyncError> {
+    cfg.validate()?;
+    let mut get = http_agent().get(cfg.url.as_str());
+    if let Some(auth) = &authorization(cfg) {
+        get = get.header("Authorization", auth.as_str());
+    }
+    let mut response = get.call()?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        check_status(status)?;
+        return Err(SyncError::Http(status));
+    }
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(256 * 1024 * 1024)
+        .read_to_vec()?;
+    remote_database(&bytes, creds)?;
+    Ok(bytes)
+}
 /// Holds the vault's flock for the complete download/merge/upload transaction.
 pub fn sync(
     local: &Path,
@@ -121,21 +162,8 @@ pub fn sync(
     let initial = fs::read(local)?;
     let local_hash = hash(&initial);
     let local_changed = local_hash != state.local_hash;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .max_redirects(0)
-        .timeout_global(Some(Duration::from_secs(60)))
-        .build()
-        .into();
-    let authorization = cfg.username.as_ref().map(|user| {
-        Zeroizing::new(format!(
-            "Basic {}",
-            STANDARD.encode(format!(
-                "{user}:{}",
-                cfg.password.as_ref().map(|p| p.as_str()).unwrap_or("")
-            ))
-        ))
-    });
+    let agent = http_agent();
+    let authorization = authorization(cfg);
     for attempt in 0..3 {
         let mut get = agent.get(cfg.url.as_str());
         if let Some(auth) = &authorization {

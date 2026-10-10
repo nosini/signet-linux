@@ -1,25 +1,52 @@
 # Signet
 
 Signet keeps OpenPGP keys in an encrypted KeePass vault and asks before
-signing or decrypting. This is the Linux agent: a GnuPG-compatible agent.
-Signet for Android, an OpenKeychain-compatible OpenPGP provider, is a separate
-project; both can sync the same KDBX file over WebDAV.
+signing or decrypting. The Linux app works with GnuPG and Git and runs an
+agent in the background. [Signet for Android](https://github.com/nosini/signet-android)
+can sync the same KDBX file over WebDAV.
 
 The name comes from a signet ring: a seal used to sign documents. The code is
 licensed under **GPL-3.0-or-later**.
 
 ## Installation and use
 
-You need GnuPG and a pinentry program. Build and install from the repository:
+Install the native app using the [build and installation instructions](README-dev.md).
+Launch **Signet** from your application menu. You can create a new vault,
+open a vault file, or download one using the full HTTPS URL of a WebDAV
+file. Opened vaults and optional key files are copied into Signet's storage;
+the source files are left unchanged.
+
+Choose **Import Key** to add an OpenPGP key file. Signet asks for its
+passphrase when needed and prepares the dedicated GnuPG home automatically.
+Open a key's details to copy its fingerprint, copy or save its public
+certificate, copy Git signing commands, or remove it from the vault.
+Secret keys cannot be exported from the app.
+
+Use **Copy GNUPGHOME** and paste the assignment into the shell that will run
+GnuPG or Git. The dedicated home contains public certificates and trust
+information; secret keys stay in the vault. After syncing new keys from
+another device, choose **Set Up GnuPG** to update those certificates.
+
+Signet starts locked and asks for the master password when a key is needed.
+It asks for approval before signing or decrypting and locks after 15 idle
+minutes by default. **Lock**, **Unlock**, and **Sync** are also available
+in the window. Preferences control idle locking, approval reuse, startup at
+login, and WebDAV. Set approval reuse to `0s` to ask every time. Callers that
+cannot be identified always require a fresh approval.
+
+Closing the window keeps the agent running. Reopen Signet from the menu to
+manage it, or use **Quit Signet** to stop it. Use one agent at a time: if you
+previously enabled the command-line service, stop it before opening the app:
 
 ```sh
-cargo build --release --locked
-sudo install -m 755 target/release/signet /usr/local/bin/signet
-sudo install -Dm 644 packaging/signet.service /usr/local/lib/systemd/user/signet.service
+systemctl --user disable --now signet.service
 ```
 
-Compiler and development-package requirements are in
-[README-dev.md](README-dev.md).
+## Command-line use
+
+The `signet` CLI can run without the graphical app, using pinentry for its
+password and approval dialogs. Install the optional user service as described
+in [README-dev.md](README-dev.md), then set it up:
 
 Create a vault, import a key, and prepare the dedicated GnuPG home:
 

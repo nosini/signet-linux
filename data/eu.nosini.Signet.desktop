@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Signet
+Comment=Keep OpenPGP keys in an encrypted vault
+Exec=signet-gui
+Icon=eu.nosini.Signet
+Terminal=false
+Categories=Utility;Security;
+Keywords=OpenPGP;GnuPG;PGP;KeePass;Encryption;Signing;GTK;
+StartupNotify=true
