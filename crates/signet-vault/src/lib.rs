@@ -428,8 +428,13 @@ pub fn unlock_cert(
                         break;
                     }
                     Err(error) if attempt == 2 => {
-                        return Err(pgp_error(error.context(
-                            "cannot unlock secret key after three attempts; check its passphrase and OpenPGP format",
+                        // Keep the cause: a wrong passphrase and an
+                        // unsupported key look alike otherwise.
+                        return Err(pgp_error(format_args!(
+                            "{:#}",
+                            error.context(
+                                "cannot unlock secret key after three attempts; check its passphrase and OpenPGP format",
+                            )
                         )));
                     }
                     Err(_) => {}

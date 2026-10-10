@@ -94,14 +94,39 @@ fn gnupg_fixed_width_ed25519_secret_import() {
         .verify_message(unlocked.primary_key().key(), b"legacy secret import")
         .unwrap();
     attempts = 0;
-    assert!(
-        signet_vault::unlock_cert(cert, &mut || {
-            attempts += 1;
-            Some(Zeroizing::new("wrong".into()))
-        })
-        .is_err()
-    );
+    let error = signet_vault::unlock_cert(cert, &mut || {
+        attempts += 1;
+        Some(Zeroizing::new("wrong".into()))
+    })
+    .unwrap_err()
+    .to_string();
     assert_eq!(attempts, 3);
+    // The cause tells a wrong passphrase apart from an unsupported key.
+    assert!(error.to_lowercase().contains("password"), "{error}");
+}
+
+#[test]
+fn wrong_passphrase_is_reported_for_every_key_type() {
+    use sequoia_openpgp::cert::CipherSuite;
+    for suite in [CipherSuite::RSA2k, CipherSuite::P256, CipherSuite::Cv25519] {
+        let (cert, _) = CertBuilder::new()
+            .set_cipher_suite(suite)
+            .add_userid("Test <test@example.org>")
+            .add_signing_subkey()
+            .add_transport_encryption_subkey()
+            .set_password(Some("right".into()))
+            .generate()
+            .unwrap();
+        let error =
+            signet_vault::unlock_cert(cert.clone(), &mut || Some(Zeroizing::new("wrong".into())))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.to_lowercase().contains("password"),
+            "{suite:?}: {error}"
+        );
+        signet_vault::unlock_cert(cert, &mut || Some(Zeroizing::new("right".into()))).unwrap();
+    }
 }
 
 #[test]
