@@ -14,3 +14,6 @@ implementation, by the Sequoia authors, under LGPL-2.0-or-later. The source
 is available at https://gitlab.com/sequoia-pgp/sequoia. Curve constants come
 from libgcrypt. The LGPL license text is included as
 `packaging/LICENSE-sequoia-ipc`.
+
+The fork orders entry history oldest first, resolves concurrent group-move
+cycles, validates KDBX 3 HeaderHash, and upgrades KDBX 3 files when saving.

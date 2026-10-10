@@ -2,7 +2,8 @@
 
 Signet keeps OpenPGP keys in an ordinary KeePass database (KDBX 4). The
 Linux agent and the Android app read and write the same file, and you can
-open it with any KeePass client to inspect or back up your keys.
+open it with any KeePass client to inspect or back up your keys. Both can
+read KDBX 3.1 files; Linux upgrades them to KDBX 4 on the next write.
 
 A database used only for Signet is recommended. Signet preserves unrelated
 entries, groups, fields, history, attachments, custom data and icons. XML

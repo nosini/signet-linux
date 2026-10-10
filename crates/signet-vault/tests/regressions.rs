@@ -69,3 +69,28 @@ fn history_stays_oldest_first() {
     merge(&mut db, &remote).unwrap();
     assert_eq!(order(&db), vec!["1", "2", "3"]);
 }
+#[test]
+fn kdbx3_header_hash_is_validated_and_writes_upgrade() {
+    let bytes = include_bytes!("fixtures/kdbx3.kdbx");
+    let database = Database::parse(bytes, DatabaseKey::new().with_password("password")).unwrap();
+    // Insert a harmless comment before END: decryption still works, but the header hash must fail.
+    let mut changed = bytes.to_vec();
+    let mut offset = 12;
+    while changed[offset] != 0 {
+        let len = u16::from_le_bytes([changed[offset + 1], changed[offset + 2]]) as usize;
+        offset += len + 3;
+    }
+    changed.splice(offset..offset, [1, 1, 0, b'x']);
+    let error =
+        Database::parse(&changed, DatabaseKey::new().with_password("password")).unwrap_err();
+    assert!(error.to_string().contains("header hash"), "{error}");
+    let mut out = Vec::new();
+    database
+        .save(&mut out, DatabaseKey::new().with_password("password"))
+        .unwrap();
+    let reopened = Database::parse(&out, DatabaseKey::new().with_password("password")).unwrap();
+    assert!(matches!(
+        reopened.config.version,
+        keepass::config::DatabaseVersion::KDB4(_)
+    ));
+}

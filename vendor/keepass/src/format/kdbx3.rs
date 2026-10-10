@@ -84,7 +84,9 @@ fn parse_outer_header(data: &[u8]) -> Result<KDBX3Header, Kdbx3OuterHeaderError>
 
             // COMPRESSIONFLAGS - first byte determines compression of payload
             3 => {
-                compression = Some(CompressionConfig::try_from(LittleEndian::read_u32(entry_buffer))?);
+                compression = Some(CompressionConfig::try_from(LittleEndian::read_u32(
+                    entry_buffer,
+                ))?);
             }
 
             // MASTERSEED - Master seed for deriving the master key
@@ -108,7 +110,9 @@ fn parse_outer_header(data: &[u8]) -> Result<KDBX3Header, Kdbx3OuterHeaderError>
             // INNERRANDOMSTREAMID - specifies which cipher suite
             //                       to use for decrypting the inner protected values
             10 => {
-                inner_cipher = Some(InnerCipherConfig::try_from(LittleEndian::read_u32(entry_buffer))?);
+                inner_cipher = Some(InnerCipherConfig::try_from(LittleEndian::read_u32(
+                    entry_buffer,
+                ))?);
             }
 
             _ => {
@@ -183,12 +187,17 @@ pub enum Kdbx3OuterHeaderError {
 }
 
 /// Open, decrypt and parse a KeePass database from a source and a password
-pub(crate) fn parse_kdbx3(data: &[u8], db_key: &DatabaseKey) -> Result<Database, DatabaseOpenError> {
+pub(crate) fn parse_kdbx3(
+    data: &[u8],
+    db_key: &DatabaseKey,
+) -> Result<Database, DatabaseOpenError> {
     let (config, mut inner_decryptor, xml) = decrypt_kdbx3(data, db_key)?;
 
     // Parse XML data blocks
-    let mut db = crate::format::xml_db::parse_xml(&xml, &[], &mut *inner_decryptor)
-        .map_err(|e| DatabaseOpenError::Format(DatabaseFormatError::Kdbx3(Kdbx3OpenError::Xml(e))))?;
+    let mut db =
+        crate::format::xml_db::parse_xml(&xml, &[], &mut *inner_decryptor).map_err(|e| {
+            DatabaseOpenError::Format(DatabaseFormatError::Kdbx3(Kdbx3OpenError::Xml(e)))
+        })?;
 
     db.config = config;
 
@@ -202,10 +211,13 @@ pub(crate) fn decrypt_kdbx3(
     db_key: &DatabaseKey,
 ) -> Result<(DatabaseConfig, Box<dyn Cipher>, Vec<u8>), DatabaseOpenError> {
     let version = DatabaseVersion::parse(data)?;
-    let header = parse_outer_header(data)
-        .map_err(|e| DatabaseOpenError::Format(DatabaseFormatError::Kdbx3(Kdbx3OpenError::OuterHeader(e))))?;
+    let header = parse_outer_header(data).map_err(|e| {
+        DatabaseOpenError::Format(DatabaseFormatError::Kdbx3(Kdbx3OpenError::OuterHeader(e)))
+    })?;
 
-    let inner_decryptor = header.inner_cipher.get_cipher(&header.protected_stream_key)?;
+    let inner_decryptor = header
+        .inner_cipher
+        .get_cipher(&header.protected_stream_key)?;
 
     let config = DatabaseConfig {
         version,
@@ -302,6 +314,32 @@ pub(crate) fn decrypt_kdbx3(
     }
 
     let xml = compression.decompress(&buf)?;
+    #[derive(serde::Deserialize)]
+    struct Binding {
+        #[serde(rename = "Meta")]
+        meta: HeaderBinding,
+    }
+    #[derive(serde::Deserialize)]
+    struct HeaderBinding {
+        #[serde(rename = "HeaderHash", default)]
+        hash: Option<String>,
+    }
+    let binding: Binding = quick_xml::de::from_reader(xml.as_slice())
+        .map_err(crate::format::xml_db::ParseXmlError::from)
+        .map_err(Kdbx3OpenError::from)
+        .map_err(DatabaseFormatError::from)?;
+    if let Some(hash) = binding.meta.hash {
+        use base64::Engine as _;
+        let expected = calculate_sha256(&[&data[..header.body_start]]);
+        if base64::engine::general_purpose::STANDARD
+            .decode(hash)
+            .ok()
+            .as_deref()
+            != Some(expected.as_slice())
+        {
+            return Err(DatabaseFormatError::Kdbx3(Kdbx3OpenError::HeaderHashMismatch).into());
+        }
+    }
 
     Ok((config, inner_decryptor, xml))
 }
@@ -310,6 +348,9 @@ pub(crate) fn decrypt_kdbx3(
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Kdbx3OpenError {
+    /// The decrypted XML does not authenticate the file header.
+    #[error("header hash mismatch")]
+    HeaderHashMismatch,
     /// Errors related to parsing the outer header of the KDBX3 database
     #[error(transparent)]
     OuterHeader(#[from] Kdbx3OuterHeaderError),

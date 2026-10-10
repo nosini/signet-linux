@@ -14,7 +14,11 @@ impl Database {
         match self.config.version {
             DatabaseVersion::KDB(_) => Err(DatabaseSaveError::UnsupportedVersion),
             DatabaseVersion::KDB2(_) => Err(DatabaseSaveError::UnsupportedVersion),
-            DatabaseVersion::KDB3(_) => Err(DatabaseSaveError::UnsupportedVersion),
+            DatabaseVersion::KDB3(_) => {
+                let mut upgraded = self.clone();
+                upgraded.config.version = DatabaseVersion::KDB4(1);
+                dump_kdbx4(&upgraded, &key, destination)
+            }
             DatabaseVersion::KDB4(_) => dump_kdbx4(self, &key, destination),
         }
     }

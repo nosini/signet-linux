@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose as base64_engine, Engine as _};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize, Serializer};
+use std::convert::TryInto;
 
 /// In KDBX4, timestamps are stored as seconds, Base64 encoded, since 0001-01-01 00:00:00.
 /// This function returns the epoch baseline used by KDBX for date serialization.
@@ -57,8 +58,8 @@ impl<'de> Deserialize<'de> for Timestamp {
     {
         let t = String::deserialize(deserializer)?;
 
-        match chrono::NaiveDateTime::parse_from_str(&t, "%Y-%m-%dT%H:%M:%SZ") {
-            Ok(ndt) => Ok(Timestamp::new_iso8601(ndt)),
+        match chrono::DateTime::parse_from_rfc3339(&t) {
+            Ok(time) => Ok(Timestamp::new_iso8601(time.naive_utc())),
 
             // If we don't have a valid ISO 8601 string, assume we have found a Base64 encoded int.
             _ => {
@@ -67,10 +68,15 @@ impl<'de> Deserialize<'de> for Timestamp {
                     .map_err(serde::de::Error::custom)?;
 
                 // Cast the decoded base64 Vec into the array expected by i64::from_le_bytes
-                let mut a: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
-                #[allow(clippy::indexing_slicing)] // v is guaranteed to be at least 8 bytes long
-                a.copy_from_slice(&v[0..8]);
-                let ndt = get_epoch_baseline() + chrono::Duration::seconds(i64::from_le_bytes(a));
+                let a: [u8; 8] = v
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| serde::de::Error::custom("timestamp must encode eight bytes"))?;
+                let duration = chrono::Duration::try_seconds(i64::from_le_bytes(a))
+                    .ok_or_else(|| serde::de::Error::custom("timestamp out of range"))?;
+                let ndt = get_epoch_baseline()
+                    .checked_add_signed(duration)
+                    .ok_or_else(|| serde::de::Error::custom("timestamp out of range"))?;
 
                 Ok(Timestamp::new_base64(ndt))
             }
@@ -122,6 +128,15 @@ mod tests {
     }
 
     #[test]
+    fn fractional_timestamp_and_invalid_binary_lengths() {
+        let ts: Timestamp = quick_xml::de::from_str("2026-10-10T12:34:56.125+02:00").unwrap();
+        assert_eq!(ts.time.to_string(), "2026-10-10 10:34:56.125");
+        for invalid in ["AA==", "AAAAAAAAAAAA", "/////////38="] {
+            assert!(quick_xml::de::from_str::<Timestamp>(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn test_deserialize_timestamp_base64() {
         let ts_str = "AQAAAAAAAAA="; // Base64 for 1 second since epoch
         let ts: Timestamp = quick_xml::de::from_str(ts_str).unwrap();
@@ -136,7 +151,8 @@ mod tests {
     fn test_serialize_timestamp_iso8601() {
         let ts = Timestamp {
             mode: TimestampMode::Iso8601,
-            time: NaiveDateTime::parse_from_str("2023-10-05T12:34:56", "%Y-%m-%dT%H:%M:%S").unwrap(),
+            time: NaiveDateTime::parse_from_str("2023-10-05T12:34:56", "%Y-%m-%dT%H:%M:%S")
+                .unwrap(),
         };
         let serialized = quick_xml::se::to_string(&Test(ts)).unwrap();
         assert_eq!(serialized, "<Test>2023-10-05T12:34:56Z</Test>");

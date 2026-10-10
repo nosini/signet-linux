@@ -18,6 +18,9 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 pub struct Meta {
+    // KDBX 3 header binding is checked by the format parser; KDBX 4 omits it.
+    #[serde(default, rename = "HeaderHash", skip_serializing)]
+    _header_hash: Option<String>,
     #[serde(default, with = "cs_opt_string", skip_serializing_if = "Option::is_none")]
     generator: Option<String>,
 
@@ -152,6 +155,7 @@ impl From<Meta> for crate::db::Meta {
 impl From<crate::db::Meta> for Meta {
     fn from(db: crate::db::Meta) -> Self {
         Self {
+            _header_hash: None,
             generator: db.generator.clone(),
             database_name: db.database_name.clone(),
             database_name_changed: db.database_name_changed.as_ref().map(|t| (*t).into()),
@@ -619,6 +623,7 @@ mod tests {
     #[test]
     fn test_serialize_meta() {
         let meta = Meta {
+            _header_hash: None,
             generator: Some("TestGenerator".to_string()),
             database_name: Some("TestDB".to_string()),
             database_name_changed: Some(Timestamp::new_iso8601(
