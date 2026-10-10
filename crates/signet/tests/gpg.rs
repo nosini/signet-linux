@@ -355,7 +355,7 @@ fn offline_primary_stub_keeps_usable_signing_and_decryption_subkeys() {
 }
 
 #[test]
-fn confirmation_ignores_client_environment() {
+fn confirmation_ignores_client_environment_and_clears_old_description() {
     let mut h = Harness::new();
     h.generator(
         &[
@@ -398,4 +398,35 @@ fn confirmation_ignores_client_environment() {
     assert!(!routing.contains(":99"), "{routing}");
     assert!(!routing.contains("attacker-bus"), "{routing}");
     assert!(!routing.contains("/dev/pts/77"), "{routing}");
+    assert_eq!(prompts.matches("UniqueRequestDescription").count(), 1);
+}
+
+#[test]
+fn unknown_grip_does_not_unlock_and_uses_agent_error_source() {
+    let mut h = Harness::new();
+    h.generator(
+        &[
+            "--quick-gen-key",
+            "Missing <missing@example.org>",
+            "ed25519",
+            "sign",
+            "never",
+        ],
+        b"",
+    );
+    let secret = h.generator(&["--export-secret-keys"], b"");
+    let public = h.generator(&["--export"], b"");
+    h.start(&secret, &public);
+    success(h.cli("lock"));
+    fs::write(h.dir.path().join("prompts"), b"").unwrap();
+    let output = connect(
+        &h,
+        &[
+            &format!("SIGKEY {}", "00".repeat(20)),
+            &format!("SETHASH 8 {}", "00".repeat(32)),
+            "PKSIGN",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ERR 67108881"));
+    assert!(fs::read(h.dir.path().join("prompts")).unwrap().is_empty());
 }

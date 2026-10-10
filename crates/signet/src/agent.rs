@@ -29,7 +29,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-const SOURCE: u32 = 5 << 24;
+const SOURCE: u32 = 4 << 24;
 const CANCEL: u32 = SOURCE + 99;
 const UNSUPPORTED: u32 = SOURCE + 60;
 const NO_KEY: u32 = SOURCE + 17;
@@ -479,6 +479,21 @@ fn handle(
     writer: &mut impl Write,
     shared: &Arc<Mutex<State>>,
 ) -> std::result::Result<(), ProtocolError> {
+    let description = if command == "PKSIGN" || command == "PKDECRYPT" {
+        let description = std::mem::take(&mut session.description);
+        if !shared
+            .lock()
+            .map_err(|_| unsupported())?
+            .cache
+            .iter()
+            .any(|key| key.grip == session.key)
+        {
+            return Err(no_key());
+        }
+        description
+    } else {
+        String::new()
+    };
     let ciphertext = if command == "PKDECRYPT" {
         Some(assuan::inquire(reader, writer)?)
     } else {
@@ -620,13 +635,8 @@ fn handle(
         }
         "PKSIGN" => {
             let (algorithm, digest) = session.hash.take().ok_or_else(unsupported)?;
-            let mut pair = state.pair(
-                &session.key,
-                &session.options,
-                caller,
-                "sign",
-                &session.description,
-            )?;
+            let mut pair =
+                state.pair(&session.key, &session.options, caller, "sign", &description)?;
             let signature = crypto::sign(&mut pair, algorithm, &digest)?;
             assuan::data(writer, &signature)?;
         }
@@ -641,7 +651,7 @@ fn handle(
                 &session.options,
                 caller,
                 "decrypt",
-                &session.description,
+                &description,
             )?;
             let decrypted = crypto::decrypt(&mut pair, &ciphertext, kem)?;
             if matches!(
