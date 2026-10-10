@@ -293,3 +293,56 @@ fn real_gpg_sign_encrypt_deny_lock_and_export() {
         message,
     ));
 }
+
+fn connect(h: &Harness, args: &[&str]) -> Output {
+    let mut command = Command::new("gpg-connect-agent");
+    h.env(&mut command);
+    command.args(["--no-autostart"]).args(args).arg("/bye");
+    execute(&mut command, b"")
+}
+
+#[test]
+fn confirmation_ignores_client_environment() {
+    let mut h = Harness::new();
+    h.generator(
+        &[
+            "--quick-gen-key",
+            "Prompt <prompt@example.org>",
+            "ed25519",
+            "sign",
+            "never",
+        ],
+        b"",
+    );
+    let secret = h.generator(&["--export-secret-keys"], b"");
+    let public = h.generator(&["--export"], b"");
+    h.start(&secret, &public);
+    let info = connect(&h, &["KEYINFO --list"]);
+    let text = String::from_utf8_lossy(&info.stdout);
+    let grip = text.split_whitespace().nth(2).unwrap();
+    let log = h.dir.path().join("trusted-prompt");
+    fs::write(h.dir.path().join("pinentry"), format!("#!/bin/sh\nprintf 'ENV DISPLAY=%s DBUS=%s\\n' \"$DISPLAY\" \"$DBUS_SESSION_BUS_ADDRESS\" >> '{log}'\nprintf 'OK\\n'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{log}'; printf 'OK\\n'; done\n",log=log.display())).unwrap();
+    success(connect(
+        &h,
+        &[
+            "OPTION putenv=DISPLAY=:99",
+            "OPTION putenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/attacker-bus",
+            "OPTION ttyname=/dev/pts/77",
+            "SETKEYDESC UniqueRequestDescription",
+            &format!("SIGKEY {grip}"),
+            &format!("SETHASH 8 {}", "00".repeat(32)),
+            "PKSIGN",
+            &format!("SETHASH 8 {}", "00".repeat(32)),
+            "PKSIGN",
+        ],
+    ));
+    let prompts = fs::read_to_string(log).unwrap();
+    let routing = prompts
+        .lines()
+        .filter(|line| line.starts_with("ENV ") || line.starts_with("OPTION "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!routing.contains(":99"), "{routing}");
+    assert!(!routing.contains("attacker-bus"), "{routing}");
+    assert!(!routing.contains("/dev/pts/77"), "{routing}");
+}

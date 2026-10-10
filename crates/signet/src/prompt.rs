@@ -220,7 +220,13 @@ pub fn approve(
     if !description.is_empty() {
         text.push_str(&format!("\nRequest details: {}", sanitize(description)));
     }
-    let mut pinentry = Pinentry::open(binary, options)?;
+    // Confirmation is authorization: clients must not choose its display or terminal.
+    let _ = options;
+    let mut trusted = Options::new();
+    if let Ok(tty) = std::env::var("GPG_TTY") {
+        trusted.insert("ttyname".into(), tty);
+    }
+    let mut pinentry = Pinentry::open(binary, &trusted)?;
     pinentry.command("SETDESC", &text)?;
     pinentry.command("SETOK", "Allow")?;
     pinentry.command("SETCANCEL", "Deny")?;

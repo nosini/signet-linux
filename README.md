@@ -47,8 +47,11 @@ Signing and decryption open pinentry approval dialogs showing the operation,
 key fingerprint, and requesting process chain. Signet starts locked and
 unlocks through pinentry when needed. It locks after 15 idle minutes by
 default. `signet lock`, `signet unlock`, and `signet status` control the daemon.
-Process descriptions help identify a request, but an application can change
-its own command line.
+Approval dialogs use the agent's session display and terminal, so clients
+cannot choose where confirmation appears. Process descriptions help identify
+a request, but an application can change its own command line. Approval is
+not a security boundary against unrestricted code running as the same Linux
+user, which can edit Signet's configuration.
 
 For Git signing, choose the key's full fingerprint:
 
