@@ -399,6 +399,15 @@ fn confirmation_ignores_client_environment_and_clears_old_description() {
     assert!(!routing.contains("attacker-bus"), "{routing}");
     assert!(!routing.contains("/dev/pts/77"), "{routing}");
     assert_eq!(prompts.matches("UniqueRequestDescription").count(), 1);
+    if unsafe { libc::geteuid() } != 0 {
+        use std::os::unix::fs::MetadataExt;
+        let proc = format!("/proc/{}/mem", h.daemon.as_ref().unwrap().id());
+        assert_ne!(
+            fs::metadata(proc).unwrap().uid(),
+            unsafe { libc::geteuid() },
+            "agent must be non-dumpable"
+        );
+    }
 }
 
 #[test]

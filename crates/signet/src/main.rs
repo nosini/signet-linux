@@ -168,7 +168,12 @@ fn main() -> Result<()> {
     }
     let mut config = Config::read()?;
     match command {
-        Action::Agent => agent::run(config),
+        Action::Agent => {
+            if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            agent::run(config)
+        }
         Action::Import { files } => {
             let _lock = signet_vault::lock(&config.vault)?;
             let mut vault = open(&config)?;

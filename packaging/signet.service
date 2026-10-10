@@ -18,6 +18,7 @@ LockPersonality=yes
 RuntimeDirectory=signet gnupg
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
+LimitCORE=0
 StateDirectory=signet
 UMask=0077
 
