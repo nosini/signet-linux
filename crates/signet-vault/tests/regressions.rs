@@ -94,3 +94,30 @@ fn kdbx3_header_hash_is_validated_and_writes_upgrade() {
         keepass::config::DatabaseVersion::KDB4(_)
     ));
 }
+
+#[test]
+fn missing_group_times_keep_the_same_topology_across_merge_directions() {
+    let password = || DatabaseKey::new().with_password("password");
+    let local = Database::parse(include_bytes!("fixtures/absent-local.kdbx"), password()).unwrap();
+    let remote =
+        Database::parse(include_bytes!("fixtures/absent-remote.kdbx"), password()).unwrap();
+    let mut forward = local.clone();
+    let mut reverse = remote.clone();
+    merge(&mut forward, &remote).unwrap();
+    merge(&mut reverse, &local).unwrap();
+    let root_child = |db: &Database| db.root().groups().next().unwrap().id();
+    assert_eq!(root_child(&forward), root_child(&reverse));
+    assert_eq!(
+        root_child(&forward).uuid().to_string(),
+        "00000000-0000-0000-0000-000000000001"
+    );
+    merge(&mut forward, &remote).unwrap();
+    assert_eq!(root_child(&forward), root_child(&reverse));
+    let root = forward.root();
+    let a = root.groups().next().unwrap();
+    assert_eq!(a.times.location_changed, Some(time(10)));
+    assert_eq!(
+        a.groups().next().unwrap().times.location_changed,
+        Some(time(20))
+    );
+}
