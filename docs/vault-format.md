@@ -106,7 +106,9 @@ The merge works per entry and per group, matched by UUID:
   after its last modification time.
 - The deleted-objects lists are combined.
 - A moved entry follows the location of the newer version, based on its
-  location-changed time.
+  location-changed time. If concurrent group moves would create a cycle,
+  move the group with the oldest location change back to the root. UUID
+  order breaks ties, so both platforms resolve the conflict consistently.
 - Database settings come from the copy whose settings changed most recently.
 
 Attachments and custom icons are retained, including those used by historical

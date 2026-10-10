@@ -237,6 +237,33 @@ pub fn merge(local: &mut Database, remote: &Database) -> Result<(), MergeError> 
             .ok_or(MergeError::InvalidStructure)?
             .parent = parent;
     }
+    // Independent valid moves can form a cycle. Keep the newest moves and break
+    // the oldest edge (UUID breaks ties) by returning that group to the root.
+    let mut ids: Vec<_> = out.groups.keys().copied().collect();
+    ids.sort_by_key(|id| id.uuid());
+    for id in ids {
+        let mut chain = Vec::new();
+        let mut next = Some(id);
+        while let Some(group) = next {
+            if let Some(start) = chain.iter().position(|&old| old == group) {
+                let break_id = *chain[start..]
+                    .iter()
+                    .min_by_key(|id| (out.groups[id].times.location_changed, id.uuid()))
+                    .ok_or(MergeError::InvalidStructure)?;
+                out.groups
+                    .get_mut(&break_id)
+                    .ok_or(MergeError::InvalidStructure)?
+                    .parent = Some(out.root);
+                break;
+            }
+            chain.push(group);
+            next = out
+                .groups
+                .get(&group)
+                .ok_or(MergeError::InvalidStructure)?
+                .parent;
+        }
+    }
     rebuild_references(&mut out)?;
     *local = out;
     Ok(())
