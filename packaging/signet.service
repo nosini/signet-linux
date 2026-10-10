@@ -5,7 +5,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/signet agent
+ExecStart=/usr/local/bin/signet agent
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes

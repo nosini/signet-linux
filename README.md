@@ -14,8 +14,8 @@ You need GnuPG and a pinentry program. Build and install from the repository:
 
 ```sh
 cargo build --release --locked
-sudo install -m 755 target/release/signet /usr/bin/signet
-sudo install -Dm 644 packaging/signet.service /usr/lib/systemd/user/signet.service
+sudo install -m 755 target/release/signet /usr/local/bin/signet
+sudo install -Dm 644 packaging/signet.service /usr/local/lib/systemd/user/signet.service
 ```
 
 Compiler and development-package requirements are in
