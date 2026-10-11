@@ -25,6 +25,11 @@
   <branding><color type="primary" scheme_preference="light">#183B38</color><color type="primary" scheme_preference="dark">#183B38</color></branding>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.4" date="2026-10-11">
+      <description>
+        <p>Exported public keys no longer contain comment lines, which mail servers such as Stalwart rejected when the key was pasted into their encryption settings.</p>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-10-11">
       <description>
         <p>Manage Subkeys in a key's details adds Ed25519, Cv25519 and RSA subkeys, changes expiry dates, revokes and deletes subkeys, and attaches a key from another key in the vault as a subkey, keeping its fingerprint so old mail still decrypts.</p>
