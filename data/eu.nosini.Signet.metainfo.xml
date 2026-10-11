@@ -25,6 +25,12 @@
   <branding><color type="primary" scheme_preference="light">#183B38</color><color type="primary" scheme_preference="dark">#183B38</color></branding>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.3" date="2026-10-11">
+      <description>
+        <p>Manage Subkeys in a key's details adds Ed25519, Cv25519 and RSA subkeys, changes expiry dates, revokes and deletes subkeys, and attaches a key from another key in the vault as a subkey, keeping its fingerprint so old mail still decrypts.</p>
+        <p>Subkeys deleted in Signet or on another device are now removed from GnuPG too. After turning on the standard GnuPG home, Signet explains that Flatpak mail apps such as Evolution need access to GnuPG's socket folder.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-11">
       <description>
         <p>Signet can serve GnuPG's standard home, so programs find it without setting GNUPGHOME. The signing and decryption prompts can be turned off separately, a native install names Flatpak apps and remembers approvals for each, and secret keys can be exported as a passphrase-protected backup.</p>
