@@ -452,3 +452,24 @@ fn malformed_history_uuid_returns_error() {
     let error = Database::parse(bytes, DatabaseKey::new().with_password("password")).unwrap_err();
     assert!(error.to_string().contains("History UUID"));
 }
+
+#[test]
+fn public_armor_has_only_base64_between_the_markers() {
+    let certificate = cert();
+    let armor = signet_vault::public_armor(&certificate).unwrap();
+    let mut lines = armor.lines();
+    assert_eq!(lines.next(), Some("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+    // Importers like Stalwart decode every character after the BEGIN line
+    // as base64, so there must be no headers.
+    let body: Vec<&str> = lines
+        .take_while(|line| !line.starts_with("-----END"))
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert!(body.iter().all(|line| {
+        line.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+    }));
+    assert!(!armor.contains("Comment:"));
+    let parsed = Cert::from_bytes(armor.as_bytes()).unwrap();
+    assert_eq!(parsed, certificate.strip_secret_key_material());
+}

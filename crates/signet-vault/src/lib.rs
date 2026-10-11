@@ -527,9 +527,15 @@ pub fn unlock_cert(
         .map(|(cert, _)| cert)
         .map_err(pgp_error)
 }
+/// The armored public certificate, without the `Comment:` headers Sequoia
+/// adds by default. Some importers, such as Stalwart's encryption-at-rest
+/// settings, read everything after the BEGIN line as base64 and reject them.
 pub fn public_armor(cert: &Cert) -> Result<String, VaultError> {
-    let mut buffer = Vec::new();
-    cert.armored().serialize(&mut buffer).map_err(pgp_error)?;
+    let mut writer =
+        sequoia_openpgp::armor::Writer::new(Vec::new(), sequoia_openpgp::armor::Kind::PublicKey)
+            .map_err(pgp_error)?;
+    cert.serialize(&mut writer).map_err(pgp_error)?;
+    let buffer = writer.finalize().map_err(pgp_error)?;
     String::from_utf8(buffer).map_err(pgp_error)
 }
 /// The armored secret key with every unprotected secret encrypted under
