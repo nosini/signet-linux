@@ -49,6 +49,17 @@ pub fn show(window: &Rc<Window>) {
         .active(autostart::enabled())
         .build();
     security.add(&login);
+    let gnupg = adw::PreferencesGroup::builder()
+        .title("GnuPG")
+        .description("Serving GnuPG's standard home lets programs use Signet without setting GNUPGHOME. Signet then replaces GnuPG's own agent, so keys kept in GnuPG itself can't be used. Takes effect after reopening Signet.")
+        .build();
+    page.add(&gnupg);
+    let standard = adw::SwitchRow::builder()
+        .title("Serve the standard GnuPG home")
+        .subtitle("~/.gnupg")
+        .active(config.uses_standard_gnupg_home())
+        .build();
+    gnupg.add(&standard);
     let webdav = adw::PreferencesGroup::builder()
         .title("WebDAV")
         .description(
@@ -82,12 +93,24 @@ pub fn show(window: &Rc<Window>) {
             config.approval.remember = remember.text().to_string();
             config.approval.sign = ask_sign.is_active();
             config.approval.decrypt = ask_decrypt.is_active();
+            let use_standard = standard.is_active();
+            let home_changed = use_standard != config.uses_standard_gnupg_home();
+            if home_changed {
+                config.gnupg_home = if use_standard {
+                    signet::config::standard_gnupg_home()
+                } else {
+                    signet::config::dedicated_gnupg_home()
+                };
+            }
             let url = url.text().to_string();
             let username = user.text().to_string();
             let password = Zeroizing::new(pass.text().to_string());
             let interval = interval.text().to_string();
             let autostart = login.is_active();
             let valid = (|| -> anyhow::Result<()> {
+                if home_changed && use_standard {
+                    signet::manage::check_standard_gnupg_home_access()?;
+                }
                 config
                     .lock_duration()
                     .context("Lock after idle needs a duration such as 15m or 30s")?;
@@ -150,7 +173,11 @@ pub fn show(window: &Rc<Window>) {
                                     },
                                 )?;
                             }
-                            handle.reload()
+                            if !home_changed {
+                                return handle.reload();
+                            }
+                            // The agent socket moves only when Signet starts.
+                            Ok(())
                         })
                         .await?;
                         if autostart != autostart::enabled() {
@@ -162,6 +189,10 @@ pub fn show(window: &Rc<Window>) {
                     page.set_sensitive(true);
                     dialog.set_can_close(true);
                     match result {
+                        Ok(()) if home_changed => {
+                            dialog.close();
+                            reopen_notice(&window, use_standard).await;
+                        }
                         Ok(()) => {
                             dialog.close();
                             window.toast("Preferences saved");
@@ -173,4 +204,29 @@ pub fn show(window: &Rc<Window>) {
         }
     ));
     dialog.present(Some(&window.widget));
+}
+
+/// Explains what to do after switching GnuPG homes.
+async fn reopen_notice(window: &Rc<Window>, standard: bool) {
+    let (body, commands) = if standard {
+        (
+            "Quit Signet and open it again to serve the standard GnuPG home, then choose Set Up GnuPG to add your keys to it. Signet stops GnuPG's own agent when it starts; if you use gpg-agent for SSH, that stops too. Where systemd starts GnuPG's agent, disable that first with these commands on the host.",
+            signet::manage::STOP_GNUPG_AGENT,
+        )
+    } else {
+        (
+            "Quit Signet and open it again to use its own GnuPG home. Programs then need GNUPGHOME again; use Copy GNUPGHOME. If you disabled GnuPG's agent in systemd, enable it again with these commands on the host.",
+            signet::manage::START_GNUPG_AGENT,
+        )
+    };
+    let notice = adw::AlertDialog::builder()
+        .heading("Reopen Signet")
+        .body(format!("{body}\n\n{commands}"))
+        .body_use_markup(false)
+        .close_response("close")
+        .build();
+    notice.add_responses(&[("close", "Close"), ("copy", "Copy Commands")]);
+    if notice.choose_future(Some(&window.widget)).await == "copy" {
+        window.copy(commands);
+    }
 }

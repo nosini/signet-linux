@@ -30,6 +30,16 @@ GnuPG or Git. The dedicated home contains public certificates and trust
 information; secret keys stay in the vault. After syncing new keys from
 another device, choose **Set Up GnuPG** to update those certificates.
 
+To skip `GNUPGHOME` entirely, turn on **Serve the standard GnuPG home** in
+Preferences. Signet then answers on the agent socket of `~/.gnupg`, so GnuPG,
+Git and mail clients find it without any setup. It replaces GnuPG's own
+agent, which Signet stops when it starts: keys stored in GnuPG itself can't
+be used while Signet runs, and gpg-agent's SSH support stops too. Where
+systemd starts GnuPG's agent, disable that first; Preferences shows the
+commands. Reopen Signet after changing the setting, then choose **Set Up
+GnuPG**. For the command-line agent, set `gnupg_home = "~/.gnupg"` in the
+configuration.
+
 Signet starts locked and asks for the master password when a key is needed.
 It asks for approval before signing or decrypting and locks after 15 idle
 minutes by default. **Lock**, **Unlock**, and **Sync** are also available

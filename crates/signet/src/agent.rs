@@ -376,9 +376,13 @@ fn pair_shared(
     Ok(pair)
 }
 pub fn prepare_home(config: &Config) -> Result<PathBuf> {
+    let standard = config.uses_standard_gnupg_home();
+    if standard {
+        crate::manage::check_standard_gnupg_home_access()?;
+    }
     config::private_dir(&config.gnupg_home)?;
     let conf = config.gnupg_home.join("gpg.conf");
-    if !conf.exists() {
+    if !standard && !conf.exists() {
         config::private_write(
             &conf,
             b"# Signet owns this home's agent socket.\nno-autostart\n",
@@ -405,6 +409,22 @@ pub fn prepare_home(config: &Config) -> Result<PathBuf> {
         );
     }
     Ok(socket)
+}
+/// Asks GnuPG's own agent to exit and binds its socket once it has.
+fn take_over_socket(config: &Config, path: &Path) -> Result<Socket> {
+    let _ = Command::new("gpgconf")
+        .arg("--homedir")
+        .arg(&config.gnupg_home)
+        .args(["--kill", "gpg-agent"])
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match Socket::bind(path) {
+            Ok(socket) => return Ok(socket),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => thread::sleep(Duration::from_millis(100)),
+        }
+    }
 }
 struct Socket {
     listener: UnixListener,
@@ -481,7 +501,19 @@ impl Agent {
     /// Binds the GnuPG and control sockets. Fails if another agent is running.
     pub fn start(config: Config, prompter: Arc<dyn Prompter>) -> Result<Self> {
         let socket = prepare_home(&config)?;
-        let agent_socket = Socket::bind(&socket)?;
+        let agent_socket = match Socket::bind(&socket) {
+            Ok(socket) => socket,
+            // Serving the standard home replaces GnuPG's own agent.
+            Err(_) if config.uses_standard_gnupg_home() => {
+                take_over_socket(&config, &socket).map_err(|error| {
+                    error.context(format!(
+                        "GnuPG's own agent keeps the standard socket. Systemd may be holding it; stop that on the host with:\n{}",
+                        crate::manage::STOP_GNUPG_AGENT
+                    ))
+                })?
+            }
+            Err(error) => return Err(error),
+        };
         let control_socket = Socket::bind(&config::control_path())?;
         let output = Command::new("gpgconf").arg("--version").output()?;
         let version = String::from_utf8_lossy(&output.stdout)

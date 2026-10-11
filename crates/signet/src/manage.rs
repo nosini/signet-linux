@@ -209,8 +209,28 @@ pub fn setup_gnupg(config: &Config, keys: &[KeyEntry]) -> Result<PathBuf> {
     Ok(socket)
 }
 
-/// The shell assignment that points GnuPG at Signet's home.
+/// Commands that keep systemd from holding the standard home's socket for
+/// GnuPG's own agent.
+pub const STOP_GNUPG_AGENT: &str = "systemctl --user mask --now gpg-agent.socket gpg-agent-extra.socket gpg-agent-browser.socket gpg-agent-ssh.socket\ngpgconf --kill gpg-agent";
+/// Commands that let GnuPG start its own agent again.
+pub const START_GNUPG_AGENT: &str = "systemctl --user unmask gpg-agent.socket gpg-agent-extra.socket gpg-agent-browser.socket gpg-agent-ssh.socket\nsystemctl --user start gpg-agent.socket";
+/// Fails with the needed host command when Signet's Flatpak can't write
+/// the standard GnuPG home.
+pub fn check_standard_gnupg_home_access() -> Result<()> {
+    if !crate::flatpak::can_write_standard_gnupg_home() {
+        bail!(
+            "Signet's Flatpak needs access to ~/.gnupg to serve it. Run this on the host, then try again:\nflatpak override --user --filesystem=~/.gnupg {}",
+            std::env::var("FLATPAK_ID").unwrap_or_else(|_| "eu.nosini.Signet".into())
+        );
+    }
+    Ok(())
+}
+
+/// The shell command that points GnuPG at Signet's home.
 pub fn gnupghome_export(config: &Config) -> String {
+    if config.uses_standard_gnupg_home() {
+        return "unset GNUPGHOME".into();
+    }
     format!(
         "export GNUPGHOME='{}'",
         config

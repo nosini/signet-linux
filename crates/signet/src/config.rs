@@ -72,6 +72,15 @@ pub fn xdg(name: &str, default: &str) -> PathBuf {
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(default))
 }
+/// GnuPG's default home. Serving it lets programs reach Signet without
+/// setting `GNUPGHOME`.
+pub fn standard_gnupg_home() -> PathBuf {
+    home().join(".gnupg")
+}
+/// Signet's own GnuPG home, used unless the standard one is chosen.
+pub fn dedicated_gnupg_home() -> PathBuf {
+    xdg("XDG_DATA_HOME", ".local/share").join("signet/gnupg")
+}
 pub fn config_path() -> PathBuf {
     xdg("XDG_CONFIG_HOME", ".config").join("signet/config.toml")
 }
@@ -98,7 +107,7 @@ impl Default for Config {
         Self {
             vault: data.join("vault.kdbx"),
             keyfile: None,
-            gnupg_home: data.join("gnupg"),
+            gnupg_home: dedicated_gnupg_home(),
             pinentry: "pinentry".into(),
             lock_after_idle: "15m".into(),
             approval: Approval::default(),
@@ -144,6 +153,9 @@ impl Config {
         };
         merge_config(document.as_table_mut(), updated.as_table());
         private_write(&config_path(), document.to_string().as_bytes())
+    }
+    pub fn uses_standard_gnupg_home(&self) -> bool {
+        self.gnupg_home == standard_gnupg_home()
     }
     pub fn lock_duration(&self) -> Result<Duration> {
         Ok(humantime::parse_duration(&self.lock_after_idle)?)
