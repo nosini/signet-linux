@@ -4,6 +4,7 @@ pub mod agent;
 mod assuan;
 pub mod config;
 mod crypto;
+pub mod flatpak;
 mod keygrip;
 pub mod manage;
 pub mod prompt;

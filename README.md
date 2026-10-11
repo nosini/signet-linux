@@ -81,7 +81,9 @@ unlocks through pinentry when needed. It locks after 15 idle minutes by
 default. `signet lock`, `signet unlock`, and `signet status` control the daemon.
 Approval dialogs use the agent's session display and terminal, so clients
 cannot choose where confirmation appears. Process descriptions help identify
-a request, but an application can change its own command line. Approval is
+a request, but an application can change its own command line. Programs in a
+Flatpak sandbox are shown with their verified app ID, such as
+`org.gnome.Evolution`, and remembered approvals apply to that app only. Approval is
 not a security boundary against unrestricted code running as the same Linux
 user, which can edit Signet's configuration.
 

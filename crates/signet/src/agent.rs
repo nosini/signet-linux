@@ -99,7 +99,7 @@ struct State {
     used: Instant,
     synced: Instant,
     last_sync: Option<String>,
-    approvals: HashMap<(String, String, Vec<PathBuf>), Instant>,
+    approvals: HashMap<(String, String, Vec<PathBuf>, Option<String>), Instant>,
     socket: PathBuf,
     version: String,
     stopping: Arc<AtomicBool>,
@@ -297,6 +297,7 @@ fn pair_shared(
         grip.to_owned(),
         operation.to_owned(),
         caller.executables.clone(),
+        caller.app_id.clone(),
     );
     let (config, key, epoch, prompting, prompter) = {
         let state = shared
@@ -326,7 +327,7 @@ fn pair_shared(
         if state.generation != epoch || state.vault.is_none() {
             bail!("vault was locked before approval");
         }
-        !caller.executables.is_empty()
+        caller.identified()
             && state
                 .approvals
                 .get(&approval)
@@ -368,7 +369,7 @@ fn pair_shared(
                 .map(|key| key.key().clone().into_keypair())
         })
         .context("secret key unavailable")??;
-    if !caller.executables.is_empty() && !config.remember_duration()?.is_zero() {
+    if caller.identified() && !config.remember_duration()?.is_zero() {
         state.approvals.insert(approval, Instant::now());
     }
     state.used = Instant::now();

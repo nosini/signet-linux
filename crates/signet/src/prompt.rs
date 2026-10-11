@@ -20,10 +20,17 @@ pub struct Caller {
     /// Sanitized descriptions of the requesting process and its parents.
     pub chain: Vec<String>,
     pub executables: Vec<PathBuf>,
+    /// The verified Flatpak app ID when the requesting process runs in a
+    /// Flatpak sandbox.
+    pub app_id: Option<String>,
 }
 impl Caller {
     pub fn description(&self) -> String {
         self.chain.join(" via ")
+    }
+    /// Whether approvals for this caller can be remembered.
+    pub fn identified(&self) -> bool {
+        !self.executables.is_empty() || self.app_id.is_some()
     }
 }
 /// Shown when the kernel reports no peer process, which happens for clients
@@ -35,9 +42,14 @@ pub fn caller(mut pid: u32) -> Caller {
         return Caller {
             chain: vec![UNIDENTIFIED.into()],
             executables: Vec::new(),
+            app_id: None,
         };
     }
+    let app_id = crate::flatpak::app_id(pid);
     let mut descriptions = Vec::new();
+    if let Some(app_id) = &app_id {
+        descriptions.push(format!("Flatpak app {app_id}"));
+    }
     let mut executables = Vec::new();
     for _ in 0..6 {
         if pid <= 1 {
@@ -81,6 +93,7 @@ pub fn caller(mut pid: u32) -> Caller {
     Caller {
         chain: descriptions,
         executables,
+        app_id,
     }
 }
 struct TimedOutput {
