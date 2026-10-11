@@ -193,6 +193,8 @@ impl Vault {
         passphrase: &mut dyn FnMut(&ImportPrompt) -> Option<Zeroizing<String>>,
     ) -> Result<Vec<KeyEntry>, VaultError> {
         // Parse and unlock the complete input before changing the database.
+        let normalized = legacy_secret::normalize_unprotected(data);
+        let data = normalized.as_ref().map_or(data, |data| data.as_slice());
         let mut certificates = Vec::new();
         for cert in CertParser::from_bytes(data).map_err(pgp_error)? {
             let cert = cert.map_err(pgp_error)?;

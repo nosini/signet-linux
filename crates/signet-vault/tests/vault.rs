@@ -130,6 +130,37 @@ fn wrong_passphrase_is_reported_for_every_key_type() {
 }
 
 #[test]
+fn gnupg_padded_unprotected_ed25519_import() {
+    for fixture in [
+        &include_bytes!("fixtures/gpg-ed25519-unprotected-primary.asc")[..],
+        &include_bytes!("fixtures/gpg-ed25519-unprotected-subkey.asc")[..],
+    ] {
+        let dir = tempdir().unwrap();
+        let mut vault = Vault::create(&dir.path().join("vault.kdbx"), credentials()).unwrap();
+        fast(&mut vault.database);
+        let imported = vault.import(fixture, &mut |_| None).unwrap();
+        assert_eq!(imported.len(), 1);
+        let cert = &imported[0].cert;
+        // A dropped subkey would not fail the import, so count the secrets.
+        assert_eq!(cert.keys().unencrypted_secret().count(), 3);
+        for key in cert.keys().unencrypted_secret() {
+            if key.key().pk_algo() != sequoia_openpgp::types::PublicKeyAlgorithm::EdDSA {
+                continue;
+            }
+            let mut signer = key.key().clone().into_keypair().unwrap();
+            let signature = sequoia_openpgp::packet::signature::SignatureBuilder::new(
+                sequoia_openpgp::types::SignatureType::Binary,
+            )
+            .sign_message(&mut signer, b"padded secret import")
+            .unwrap();
+            signature
+                .verify_message(key.key(), b"padded secret import")
+                .unwrap();
+        }
+    }
+}
+
+#[test]
 fn gnupg_fixed_width_cv25519_secret_import() {
     use sequoia_openpgp::{
         crypto::SessionKey,
