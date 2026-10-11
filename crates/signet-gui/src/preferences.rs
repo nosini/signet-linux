@@ -208,20 +208,24 @@ pub fn show(window: &Rc<Window>) {
 
 /// Explains what to do after switching GnuPG homes.
 async fn reopen_notice(window: &Rc<Window>, standard: bool) {
-    let (body, commands) = if standard {
+    let (body, commands, flatpak_apps) = if standard {
         (
             "Quit Signet and open it again to serve the standard GnuPG home, then choose Set Up GnuPG to add your keys to it. Signet stops GnuPG's own agent when it starts; if you use gpg-agent for SSH, that stops too. Where systemd starts GnuPG's agent, disable that first with these commands on the host.",
             signet::manage::STOP_GNUPG_AGENT,
+            // Without the socket folder, a Flatpak app's GnuPG starts its own
+            // agent and keybox daemon, which have no keys and lock the keybox.
+            "\n\nFlatpak apps such as Evolution also need GnuPG's socket folder. Grant it on the host and restart the app:\nflatpak override --user --filesystem=xdg-run/gnupg org.gnome.Evolution\nflatpak kill org.gnome.Evolution",
         )
     } else {
         (
             "Quit Signet and open it again to use its own GnuPG home. Programs then need GNUPGHOME again; use Copy GNUPGHOME. If you disabled GnuPG's agent in systemd, enable it again with these commands on the host.",
             signet::manage::START_GNUPG_AGENT,
+            "",
         )
     };
     let notice = adw::AlertDialog::builder()
         .heading("Reopen Signet")
-        .body(format!("{body}\n\n{commands}"))
+        .body(format!("{body}\n\n{commands}{flatpak_apps}"))
         .body_use_markup(false)
         .close_response("close")
         .build();

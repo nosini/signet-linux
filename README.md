@@ -40,6 +40,16 @@ commands. Reopen Signet after changing the setting, then choose **Set Up
 GnuPG**. For the command-line agent, set `gnupg_home = "~/.gnupg"` in the
 configuration.
 
+Flatpak apps such as Evolution also need GnuPG's socket folder. Without it,
+their GnuPG starts its own agent, which has none of your keys, and can lock
+the key database for everyone else. Grant it on the host, then restart the
+app:
+
+```sh
+flatpak override --user --filesystem=xdg-run/gnupg org.gnome.Evolution
+flatpak kill org.gnome.Evolution
+```
+
 Signet starts locked and asks for the master password when a key is needed.
 It asks for approval before signing or decrypting and locks after 15 idle
 minutes by default. **Lock**, **Unlock**, and **Sync** are also available
