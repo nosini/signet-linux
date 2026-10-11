@@ -2,7 +2,7 @@
 use crate::{
     preferences,
     prompter::{GuiPrompter, worker},
-    setup,
+    setup, subkeys,
 };
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -346,6 +346,7 @@ impl Window {
             ("git", "Copy Git Commands"),
         ]);
         if key.secret == Some(signet_vault::SecretState::Usable) {
+            dialog.add_response("subkeys", "Manage Subkeys…");
             dialog.add_response("secret", "Export Secret Key…");
         }
         dialog.add_response("remove", "Remove Key…");
@@ -368,6 +369,7 @@ impl Window {
                         this.run("Key removed", move |h| h.remove(&key.fingerprint));
                     }
                 }
+                "subkeys" => subkeys::show(&this, &key),
                 "secret" => this.export_secret(&key).await,
                 action @ ("public" | "save") => {
                     let save = action == "save";

@@ -152,6 +152,58 @@ fn hosted_agent_and_file_setup() {
         .arg(gnupg.path())
         .args(["--kill", "all"])
         .status();
+    // Subkey changes need the master password and reach GnuPG, including
+    // deletions, which importing alone would not apply.
+    let gnupg_subkeys = || {
+        let output = Command::new("gpg")
+            .arg("--homedir")
+            .arg(&handle.config().unwrap().gnupg_home)
+            .args(["--batch", "--with-colons", "--list-keys", &fp])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.starts_with("fpr:"))
+            .map(|line| line.split(':').nth(9).unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    use signet_vault::edit::{Algorithm, KeyEdit, Usage};
+    let add = KeyEdit::AddSubkey {
+        algorithm: Algorithm::Cv25519,
+        usage: Usage {
+            encrypt: true,
+            ..Usage::default()
+        },
+        expires: None,
+    };
+    assert!(handle.edit_key(&fp, "wrong", &add).is_err());
+    let before = handle.key_parts(&fp).unwrap();
+    handle.edit_key(&fp, "test", &add).unwrap();
+    let after = handle.key_parts(&fp).unwrap();
+    assert_eq!(after.len(), before.len() + 1);
+    let added = after
+        .iter()
+        .find(|part| !before.contains(part))
+        .unwrap()
+        .fingerprint
+        .clone();
+    assert!(gnupg_subkeys().contains(&added));
+    handle
+        .edit_key(
+            &fp,
+            "test",
+            &KeyEdit::DeleteSubkey {
+                key: added.parse().unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(handle.key_parts(&fp).unwrap(), before);
+    let listed = gnupg_subkeys();
+    assert!(
+        !listed.contains(&added),
+        "GnuPG still lists the deleted subkey"
+    );
+    assert_eq!(listed.len(), before.len());
     handle.lock().unwrap();
     assert!(handle.status().unwrap().locked);
     handle.unlock().unwrap();

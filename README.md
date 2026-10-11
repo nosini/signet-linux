@@ -25,6 +25,19 @@ Signet protects the file with a new passphrase that you choose. Programs that
 use the agent, such as Seahorse or `gpg --export-secret-keys`, can't export
 secret keys.
 
+**Manage Subkeys…** in a key's details lists its primary key and subkeys.
+You can add Ed25519, Cv25519 or RSA subkeys, change when the key or a subkey
+expires, revoke a subkey, or delete one that was never published. **Attach a
+Key From Another Key…** turns a key from another certificate in the vault
+into a subkey, for example an old encryption subkey when you move to a new
+primary key. It keeps its creation time and fingerprint, so mail encrypted
+to it can still be decrypted, and you can remove the old certificate
+afterwards. Each change needs the master password and is signed with the
+primary key, whose secret must be in the vault. Signet updates GnuPG
+afterwards; export the public key again so others get the change. Changes
+made with GnuPG or Seahorse stay in GnuPG's keyring and don't reach the
+vault, and they can't create subkeys.
+
 Use **Copy GNUPGHOME** and paste the assignment into the shell that will run
 GnuPG or Git. The dedicated home contains public certificates and trust
 information; secret keys stay in the vault. After syncing new keys from

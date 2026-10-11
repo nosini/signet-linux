@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! OpenPGP key storage in a KeePass database.
+pub mod edit;
 mod legacy_secret;
 pub mod merge;
 pub mod sync;
@@ -319,6 +320,79 @@ impl Vault {
             }
         }
         Ok(())
+    }
+    /// Applies `edit` to the stored key with `fingerprint`. Keys to attach
+    /// are taken from the vault's other certificates.
+    pub fn edit(
+        &mut self,
+        fingerprint: &Fingerprint,
+        edit: &edit::KeyEdit,
+    ) -> Result<KeyEntry, VaultError> {
+        let keys = self.keys();
+        let key = keys
+            .iter()
+            .find(|key| &key.fingerprint == fingerprint)
+            .ok_or_else(|| VaultError::NotFound(fingerprint.clone()))?;
+        if key.secret != SecretState::Usable {
+            return Err(pgp_error(
+                "the key's secret is not usable, so this key can't be changed",
+            ));
+        }
+        let cert = edit::apply(key.cert.clone(), edit, |wanted| {
+            keys.iter()
+                .filter(|other| &other.fingerprint != fingerprint)
+                .flat_map(|other| other.cert.keys().unencrypted_secret())
+                .find(|ka| &ka.key().fingerprint() == wanted)
+                .map(|ka| ka.key().clone())
+        })?;
+        let original = self.database.clone();
+        let result = self.store(key.uuid, &cert);
+        if result.is_err() {
+            self.database = original;
+        }
+        result
+    }
+    /// Replaces a stored certificate. Secrets the entry kept protected with
+    /// its own password stay protected with it.
+    fn store(&mut self, uuid: Uuid, cert: &Cert) -> Result<KeyEntry, VaultError> {
+        let id = EntryId::from_uuid(uuid);
+        let private = {
+            let entry = self
+                .database
+                .entry(id)
+                .ok_or_else(|| pgp_error("entry disappeared"))?;
+            let protected = entry
+                .get(PRIVATE_KEY)
+                .and_then(|armor| Cert::from_bytes(armor.as_bytes()).ok())
+                .is_some_and(|stored| {
+                    stored.keys().secret().any(|key| {
+                        key.key().secret().is_encrypted() && !secret_stub(key.key().secret())
+                    })
+                });
+            match entry.get_password().filter(|p| !p.is_empty()) {
+                Some(password) if protected => {
+                    protected_secret_armor(cert, &Password::from(password))?
+                }
+                _ => secret_armor(cert)?,
+            }
+        };
+        {
+            let mut entry = self
+                .database
+                .entry_mut(id)
+                .ok_or_else(|| pgp_error("entry disappeared"))?;
+            let mut tracked = entry.track_changes();
+            tracked.set_unprotected(PUBLIC_KEY, public_armor(cert)?);
+            tracked.set_protected(PRIVATE_KEY, private.to_string());
+        }
+        keepass::db::signet_merge::rebuild_references(&mut self.database)?;
+        read_key(
+            &self
+                .database
+                .entry(id)
+                .ok_or_else(|| pgp_error("entry disappeared"))?,
+        )?
+        .ok_or_else(|| pgp_error("invalid edited key"))
     }
     /// Saves under an exclusive lock; rejects stale in-memory snapshots.
     pub fn save(&mut self) -> Result<(), VaultError> {

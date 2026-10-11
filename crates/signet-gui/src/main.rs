@@ -3,6 +3,7 @@ mod autostart;
 mod preferences;
 mod prompter;
 mod setup;
+mod subkeys;
 mod window;
 
 use adw::prelude::*;

@@ -206,7 +206,69 @@ pub fn setup_gnupg(config: &Config, keys: &[KeyEntry]) -> Result<PathBuf> {
             trust.as_bytes(),
         )?;
     }
+    for key in keys {
+        remove_stale_subkeys(config, key)?;
+    }
     Ok(socket)
+}
+
+/// Deletes subkeys GnuPG still lists for `key` that the vault no longer
+/// has, such as one deleted in Signet or on another device. Importing never
+/// removes subkeys, and `gpg --delete-keys` refuses while the agent holds
+/// the secret, so they are deleted through `--edit-key`.
+fn remove_stale_subkeys(config: &Config, key: &KeyEntry) -> Result<()> {
+    let primary = key.fingerprint.to_hex();
+    let output = Command::new("gpg")
+        .arg("--homedir")
+        .arg(&config.gnupg_home)
+        .args(["--batch", "--with-colons", "--list-keys", &primary])
+        .stderr(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let kept: Vec<String> = key
+        .cert
+        .keys()
+        .map(|ka| ka.key().fingerprint().to_hex())
+        .collect();
+    let mut subkey = false;
+    let mut script = String::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        match fields[0] {
+            "sub" => subkey = true,
+            "fpr" if subkey => {
+                subkey = false;
+                if let Some(fingerprint) = fields.get(9)
+                    && !fingerprint.is_empty()
+                    && !kept
+                        .iter()
+                        .any(|kept| kept.eq_ignore_ascii_case(fingerprint))
+                {
+                    script.push_str(&format!("key {fingerprint}\ndelkey\ny\n"));
+                }
+            }
+            "fpr" | "grp" => {}
+            _ => subkey = false,
+        }
+    }
+    if script.is_empty() {
+        return Ok(());
+    }
+    script.push_str("save\n");
+    gpg(
+        config,
+        &[
+            "--batch",
+            "--yes",
+            "--command-fd",
+            "0",
+            "--edit-key",
+            &primary,
+        ],
+        script.as_bytes(),
+    )
 }
 
 /// Commands that keep systemd from holding the standard home's socket for

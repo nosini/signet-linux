@@ -814,18 +814,7 @@ impl Handle {
         let cert = {
             let state = self.state()?;
             let vault = state.vault.as_ref().context("vault is locked")?;
-            let expected = vault
-                .credentials()
-                .password
-                .as_deref()
-                .map_or("", |p| p.as_str());
-            if sequoia_openpgp::crypto::mem::secure_cmp(
-                expected.as_bytes(),
-                master_password.as_bytes(),
-            ) != std::cmp::Ordering::Equal
-            {
-                bail!("the master password is incorrect");
-            }
+            check_master_password(vault, master_password)?;
             vault
                 .keys()
                 .into_iter()
@@ -837,6 +826,43 @@ impl Handle {
             &cert,
             &passphrase.into(),
         )?)
+    }
+    /// The primary key and subkeys of a stored key.
+    pub fn key_parts(&self, fingerprint: &str) -> Result<Vec<signet_vault::edit::KeyPart>> {
+        let fingerprint = fingerprint.parse::<sequoia_openpgp::Fingerprint>()?;
+        unlock_shared(&self.shared, &Options::new())?;
+        let state = self.state()?;
+        let key = state
+            .vault
+            .as_ref()
+            .context("vault is locked")?
+            .keys()
+            .into_iter()
+            .find(|key| key.fingerprint == fingerprint)
+            .context("key not found")?;
+        Ok(signet_vault::edit::describe(&key.cert))
+    }
+    /// Changes a stored key's subkeys and updates GnuPG. Like secret export,
+    /// this needs the master password again. Agent clients can't request it.
+    pub fn edit_key(
+        &self,
+        fingerprint: &str,
+        master_password: &str,
+        edit: &signet_vault::edit::KeyEdit,
+    ) -> Result<()> {
+        let fingerprint = fingerprint.parse::<sequoia_openpgp::Fingerprint>()?;
+        unlock_shared(&self.shared, &Options::new())?;
+        check_master_password(
+            self.state()?.vault.as_ref().context("vault is locked")?,
+            master_password,
+        )?;
+        self.modify(|vault| Ok(vault.edit(&fingerprint, edit)?))?;
+        self.setup_gnupg().map_err(|error| {
+            anyhow::anyhow!(
+                "The key was changed, but GnuPG setup failed: {error:#}. Use Set Up GnuPG to retry."
+            )
+        })?;
+        Ok(())
     }
     /// Imports the vault's certificates and owner trust into the dedicated
     /// GnuPG home.
@@ -851,6 +877,19 @@ impl Handle {
         };
         crate::manage::setup_gnupg(&config, &keys)
     }
+}
+fn check_master_password(vault: &Vault, master_password: &str) -> Result<()> {
+    let expected = vault
+        .credentials()
+        .password
+        .as_deref()
+        .map_or("", |p| p.as_str());
+    if sequoia_openpgp::crypto::mem::secure_cmp(expected.as_bytes(), master_password.as_bytes())
+        != std::cmp::Ordering::Equal
+    {
+        bail!("the master password is incorrect");
+    }
+    Ok(())
 }
 #[derive(Default)]
 struct Session {

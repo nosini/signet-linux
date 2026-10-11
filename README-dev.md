@@ -64,9 +64,14 @@ KEMs and the standalone RFC 9580 Ed25519/X25519 packet forms are not exposed
 by the Linux keygrip/Assuan implementation. Malformed or unsupported requests
 return errors. GUI prompts and Secret Service integration require a desktop session.
 The hosted-agent test covers the library lifecycle and copying an existing
-vault without changing its source. Manual UI checks should include creating
+vault without changing its source, and checks that subkey changes reach
+GnuPG, including deletions, which `gpg --import` never applies. The vault's
+edit tests cover new subkeys of each algorithm, expiry, revocation, deletion,
+attaching keys from another certificate and keeping secrets that an entry
+protects with its own password. Manual UI checks should include creating
 and opening vaults, importing a protected key, denied and accepted approvals,
-locking during a prompt, reopening a hidden window, and startup at login.
+locking during a prompt, reopening a hidden window, startup at login, and
+each action in the subkey dialog.
 The vault tests also cover GnuPG's fixed-width legacy Ed25519/Cv25519 secret MPI
 encoding. Import normalizes that specific encoding only after verifying
 the decrypted checksum; incorrect passphrases stop after three attempts.
