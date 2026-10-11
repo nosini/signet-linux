@@ -25,6 +25,12 @@
   <branding><color type="primary" scheme_preference="light">#183B38</color><color type="primary" scheme_preference="dark">#183B38</color></branding>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.2" date="2026-10-11">
+      <description>
+        <p>Signet can serve GnuPG's standard home, so programs find it without setting GNUPGHOME. The signing and decryption prompts can be turned off separately, a native install names Flatpak apps and remembers approvals for each, and secret keys can be exported as a passphrase-protected backup.</p>
+        <p>Importing a key now reports a wrong passphrase as such, and GnuPG Ed25519 keys exported without a passphrase whose secret starts with a zero byte import completely.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-10">
       <description>
         <p>Setting up GnuPG before any key is imported no longer fails, and GnuPG errors now include GnuPG's own message.</p>
