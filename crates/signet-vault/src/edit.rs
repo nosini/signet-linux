@@ -13,7 +13,7 @@ use sequoia_openpgp::{
     policy::StandardPolicy,
     types::{Curve, HashAlgorithm, KeyFlags, ReasonForRevocation, SignatureType},
 };
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Algorithms offered for new subkeys. GnuPG reads all of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +224,9 @@ pub fn apply(
     find_key: impl Fn(&Fingerprint) -> Option<Key<SecretParts, UnspecifiedRole>>,
 ) -> Result<Cert, VaultError> {
     let mut primary = primary_signer(&cert)?;
+    if !matches!(edit, KeyEdit::DeleteSubkey { .. }) {
+        wait_for_next_signature_second(&cert);
+    }
     let packets: Vec<Packet> = match edit {
         KeyEdit::AddSubkey {
             algorithm,
@@ -374,6 +377,30 @@ fn generate(algorithm: Algorithm) -> Result<Key<SecretParts, SubordinateRole>, V
 
 /// A subkey binding signature made at `now`. Subkeys that sign carry a
 /// back signature, as GnuPG requires.
+/// OpenPGP signature times have one-second resolution. Two self-signatures
+/// from the same second tie, and Sequoia then picks either one (other
+/// implementations may pick differently), so an edit right after another one
+/// could be ignored. Waits until a new signature is newer than every
+/// self-signature on `cert`. Signatures dated further ahead come from another
+/// clock; waiting for them could take arbitrarily long.
+fn wait_for_next_signature_second(cert: &Cert) {
+    let newest = cert
+        .keys()
+        .flat_map(|ka| ka.self_signatures().chain(ka.self_revocations()))
+        .chain(
+            cert.userids()
+                .flat_map(|u| u.self_signatures().chain(u.self_revocations())),
+        )
+        .filter_map(|signature| signature.signature_creation_time())
+        .max();
+    let Some(newest) = newest else { return };
+    if let Ok(wait) = (newest + Duration::from_secs(1)).duration_since(SystemTime::now())
+        && wait <= Duration::from_secs(2)
+    {
+        std::thread::sleep(wait);
+    }
+}
+
 fn bind<P: KeyParts>(
     cert: &Cert,
     primary: &mut KeyPair,

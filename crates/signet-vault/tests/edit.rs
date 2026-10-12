@@ -11,7 +11,7 @@ use sequoia_openpgp::{
 };
 use signet_vault::{
     Credentials, PRIVATE_KEY, SecretState, Vault, VaultError,
-    edit::{Algorithm, KeyEdit, RevocationReason, Usage, describe},
+    edit::{Algorithm, KeyEdit, RevocationReason, Usage, apply, describe},
 };
 use std::time::{Duration, SystemTime};
 use tempfile::tempdir;
@@ -452,4 +452,31 @@ fn keys_without_a_primary_secret_are_not_changed() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn back_to_back_edits_take_effect() {
+    let mut cert = cert("Alice <alice@example.org>");
+    let signing = with_usage(&cert, SIGN);
+    let later = SystemTime::now() + Duration::from_secs(30 * 86400);
+    for expires in [Some(later), None, Some(later)] {
+        let edit = KeyEdit::SetExpiry {
+            key: signing.clone(),
+            expires,
+        };
+        cert = apply(cert, &edit, |_| None).unwrap();
+        let part = describe(&cert)
+            .into_iter()
+            .find(|part| part.fingerprint == signing.to_hex())
+            .unwrap();
+        assert_eq!(part.expires.is_some(), expires.is_some());
+    }
+    // Bindings from the same second tie, and the winner is arbitrary.
+    let subkey = cert.keys().subkeys().key_handle(signing).next().unwrap();
+    let mut times: Vec<_> = subkey
+        .self_signatures()
+        .map(|s| s.signature_creation_time().unwrap())
+        .collect();
+    times.dedup();
+    assert_eq!(times.len(), 4, "{times:?}");
 }
