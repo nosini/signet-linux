@@ -15,6 +15,11 @@ fn main() -> glib::ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    // Setup, import and the hosted agent all hold the master password or unlocked keys.
+    if let Err(error) = signet::disable_core_dumps() {
+        eprintln!("signet-gui: cannot disable core dumps: {error}");
+        return glib::ExitCode::FAILURE;
+    }
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.add_main_option(
         "background",

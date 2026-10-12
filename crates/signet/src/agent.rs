@@ -23,7 +23,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -197,9 +197,7 @@ fn sync_shared(shared: &Arc<Mutex<State>>) -> Result<()> {
             state.syncing.clone(),
         )
     };
-    let _guard = syncing
-        .try_lock()
-        .map_err(|_| anyhow::anyhow!("sync already running"))?;
+    let _guard = begin_sync(&syncing)?;
     let result = (|| -> Result<_> {
         let cfg = config
             .webdav_config()?
@@ -232,6 +230,16 @@ fn sync_shared(shared: &Arc<Mutex<State>>) -> Result<()> {
     state.cache = cache;
     state.approvals.clear();
     Ok(())
+}
+
+/// The mutex only marks a running sync. A sync that panicked has finished, so
+/// its poisoned lock must not block every later sync.
+fn begin_sync(syncing: &Mutex<()>) -> Result<MutexGuard<'_, ()>> {
+    match syncing.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => bail!("sync already running"),
+    }
 }
 
 fn reload_shared(shared: &Arc<Mutex<State>>) -> Result<()> {
@@ -381,6 +389,9 @@ pub fn prepare_home(config: &Config) -> Result<PathBuf> {
         crate::manage::check_standard_gnupg_home_access()?;
     }
     config::private_dir(&config.gnupg_home)?;
+    if crate::flatpak::sandboxed() {
+        prepare_flatpak_socket_dir()?;
+    }
     let conf = config.gnupg_home.join("gpg.conf");
     if !standard && !conf.exists() {
         config::private_write(
@@ -409,6 +420,16 @@ pub fn prepare_home(config: &Config) -> Result<PathBuf> {
         );
     }
     Ok(socket)
+}
+/// Flatpak creates the shared `xdg-run/gnupg` directory with mode 0755.
+/// GnuPG rejects that as a socket directory and falls back to a socket in the
+/// home, so make it private however the app was started, including at login.
+fn prepare_flatpak_socket_dir() -> Result<()> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .context("XDG_RUNTIME_DIR is not set")?;
+    config::private_dir(&runtime.join("gnupg"))
 }
 /// Asks GnuPG's own agent to exit and binds its socket once it has.
 fn take_over_socket(config: &Config, path: &Path) -> Result<Socket> {
@@ -1277,5 +1298,20 @@ mod tests {
         let uid = unsafe { libc::geteuid() };
         assert!(same_uid(uid));
         assert!(!same_uid(uid.wrapping_add(1)));
+    }
+    #[test]
+    fn sync_after_a_panicked_sync_can_run() {
+        let syncing = Arc::new(Mutex::new(()));
+        let panicked = syncing.clone();
+        let _ = thread::spawn(move || {
+            let _guard = begin_sync(&panicked).unwrap();
+            panic!("sync failed");
+        })
+        .join();
+        assert!(syncing.is_poisoned());
+        let guard = begin_sync(&syncing).unwrap();
+        let busy = begin_sync(&syncing).err().unwrap().to_string();
+        assert_eq!(busy, "sync already running");
+        drop(guard);
     }
 }

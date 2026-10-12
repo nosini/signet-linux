@@ -88,6 +88,7 @@ fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(io::stderr)
         .init();
+    signet::disable_core_dumps()?;
     let command = Cli::parse().command;
     if let Action::Init { vault, keyfile } = command {
         let config = manage::new_config(vault.as_deref(), keyfile.as_deref())?;
