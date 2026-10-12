@@ -130,16 +130,17 @@ impl Group {
     #[cfg(feature = "save_kdbx4")]
     pub(crate) fn db_to_xml(
         source: crate::db::GroupRef<'_>,
+        binary_refs: &HashMap<crate::db::AttachmentId, usize>,
         inner_cipher: &mut dyn Cipher,
     ) -> Result<Self, CryptographyError> {
         let mut children = Vec::new();
 
         for g in source.groups() {
-            children.push(GroupOrEntry::Group(Group::db_to_xml(g, inner_cipher)?));
+            children.push(GroupOrEntry::Group(Group::db_to_xml(g, binary_refs, inner_cipher)?));
         }
 
         for e in source.entries() {
-            children.push(GroupOrEntry::Entry(Entry::db_to_xml(e, inner_cipher)?));
+            children.push(GroupOrEntry::Entry(Entry::db_to_xml(e, binary_refs, inner_cipher)?));
         }
 
         let custom_data: Option<crate::format::xml_db::meta::CustomData> = if source.custom_data.is_empty() {

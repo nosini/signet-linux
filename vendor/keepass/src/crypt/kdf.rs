@@ -7,6 +7,18 @@ use sha2::{Digest, Sha256};
 
 use super::CryptographyError;
 
+// Files choose their own KDF costs, and derivation runs before the key can be checked.
+// These bounds keep a hostile file from taking unbounded time or memory while staying far
+// above what KeePass clients choose for a few seconds of derivation.
+const MAX_AES_ROUNDS: u64 = 1 << 30;
+const MAX_ARGON2_MEMORY: u64 = 2 << 30;
+const MAX_ARGON2_WORK: u128 = 64 << 30; // memory in bytes multiplied by iterations
+const MAX_ARGON2_PARALLELISM: u32 = 256;
+// rust-argon2's parallel mode starts a thread for every lane in each of the four slices of
+// every pass. Above this many threads, startup costs more than the lanes save: a few KiB per
+// lane over millions of passes would start tens of millions of threads.
+const MAX_ARGON2_THREADS: u128 = 1 << 16;
+
 pub(crate) trait Kdf {
     fn transform_key(
         &self,
@@ -30,6 +42,9 @@ impl Kdf for AesKdf {
             .as_slice()
             .try_into()
             .map_err(|_| CryptographyError::InvalidLength(cipher::InvalidLength))?;
+        if self.rounds > MAX_AES_ROUNDS {
+            return Err(CryptographyError::KdfLimit);
+        }
         let cipher = Aes256::new(&seed_arr);
         let mut block1: GenericArray<u8, _> = composite_key[..16]
             .try_into()
@@ -65,8 +80,17 @@ impl Kdf for Argon2Kdf {
         &self,
         composite_key: &GenericArray<u8, U32>,
     ) -> Result<GenericArray<u8, U32>, CryptographyError> {
+        if self.memory > MAX_ARGON2_MEMORY
+            || u128::from(self.memory) * u128::from(self.iterations) > MAX_ARGON2_WORK
+            || self.iterations > u64::from(u32::MAX)
+            || self.parallelism > MAX_ARGON2_PARALLELISM
+        {
+            return Err(CryptographyError::KdfLimit);
+        }
+        let threads = 4 * u128::from(self.parallelism) * u128::from(self.iterations);
+
         // Disable Argon2 multithreading on wasm32 targets to avoid panics on platforms without thread support.
-        let thread_mode = if cfg!(target_arch = "wasm32") {
+        let thread_mode = if cfg!(target_arch = "wasm32") || threads > MAX_ARGON2_THREADS {
             argon2::ThreadMode::Sequential
         } else {
             argon2::ThreadMode::Parallel

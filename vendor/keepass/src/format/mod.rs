@@ -17,6 +17,11 @@ use byteorder::WriteBytesExt;
 use byteorder::{ByteOrder, LittleEndian};
 use thiserror::Error;
 
+/// Reads a little-endian integer from a header field, which must have exactly the integer's width.
+pub(crate) fn read_le<const N: usize, T>(field: &[u8], from_le_bytes: fn([u8; N]) -> T) -> Option<T> {
+    std::convert::TryInto::try_into(field).ok().map(from_le_bytes)
+}
+
 const KDBX_IDENTIFIER: [u8; 4] = [0x03, 0xd9, 0xa2, 0x9a];
 
 /// Identifier for KeePass 1 format.

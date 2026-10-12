@@ -11,6 +11,7 @@ use thiserror::Error;
 
 #[cfg(feature = "save_kdbx4")]
 use crate::format::io::WriteLengthTaggedExt;
+use crate::format::read_le;
 
 pub const VARIANT_DICTIONARY_VERSION: u16 = 0x100;
 pub const VARIANT_DICTIONARY_END: u8 = 0x0;
@@ -86,12 +87,13 @@ impl VariantDictionary {
                 .ok_or(VariantDictionaryError::UnexpectedEof)?;
             pos += value_length;
 
+            let fixed = |value: Option<VariantDictionaryValue>| value.ok_or(VariantDictionaryError::UnexpectedEof);
             let value = match value_type {
-                U32_TYPE_ID => VariantDictionaryValue::UInt32(LittleEndian::read_u32(value_buffer)),
-                U64_TYPE_ID => VariantDictionaryValue::UInt64(LittleEndian::read_u64(value_buffer)),
+                U32_TYPE_ID => fixed(read_le(value_buffer, u32::from_le_bytes).map(VariantDictionaryValue::UInt32))?,
+                U64_TYPE_ID => fixed(read_le(value_buffer, u64::from_le_bytes).map(VariantDictionaryValue::UInt64))?,
                 BOOL_TYPE_ID => VariantDictionaryValue::Bool(value_buffer != [0]),
-                I32_TYPE_ID => VariantDictionaryValue::Int32(LittleEndian::read_i32(value_buffer)),
-                I64_TYPE_ID => VariantDictionaryValue::Int64(LittleEndian::read_i64(value_buffer)),
+                I32_TYPE_ID => fixed(read_le(value_buffer, i32::from_le_bytes).map(VariantDictionaryValue::Int32))?,
+                I64_TYPE_ID => fixed(read_le(value_buffer, i64::from_le_bytes).map(VariantDictionaryValue::Int64))?,
                 STR_TYPE_ID => {
                     VariantDictionaryValue::String(String::from_utf8_lossy(value_buffer).to_string())
                 }

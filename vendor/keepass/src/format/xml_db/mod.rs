@@ -59,20 +59,24 @@ pub fn to_xml(
     db: &crate::db::Database,
     inner_encryptor: &mut dyn Cipher,
 ) -> Result<(Vec<u8>, Vec<crate::db::Value<Vec<u8>>>), DatabaseSaveError> {
-    let kdbx = KeePassFile::db_to_xml(db, inner_encryptor)?;
+    // The inner header stores binaries as a dense list, and readers number them by position.
+    // IDs can have gaps after an attachment is removed, so references must use the position.
+    let mut attachments: Vec<_> = db.attachments.values().collect();
+    attachments.sort_by_key(|attachment| attachment.id.id());
+    let binary_refs: HashMap<crate::db::AttachmentId, usize> = attachments
+        .iter()
+        .enumerate()
+        .map(|(index, attachment)| (attachment.id, index))
+        .collect();
+    let attachments = attachments
+        .into_iter()
+        .map(|attachment| attachment.data.clone())
+        .collect();
+
+    let kdbx = KeePassFile::db_to_xml(db, &binary_refs, inner_encryptor)?;
     let xml = quick_xml::se::to_string_with_root("KeePassFile", &kdbx)?
         .as_bytes()
         .to_vec();
-
-    let mut attachments: Vec<(usize, Value<Vec<u8>>)> = db
-        .attachments
-        .iter()
-        .map(|(id, attachment)| (id.id(), attachment.data.clone()))
-        .collect();
-
-    attachments.sort_by_key(|(id, _)| *id);
-
-    let attachments = attachments.into_iter().map(|(_, data)| data).collect();
 
     Ok((xml, attachments))
 }
@@ -108,7 +112,11 @@ impl KeePassFile {
         // convert XML attachments (KDBX3-style) to database attachments
         if let Some(binaries) = self.meta.binaries.take() {
             for binary in binaries.binaries {
-                let id = crate::db::AttachmentId::next_free(&db);
+                // Entries refer to the declared ID, which need not match the binary's position.
+                let id = crate::db::AttachmentId::new(binary.id);
+                if attachments.contains_key(&id) {
+                    return Err(UnprotectError::DuplicateBinaryId(binary.id));
+                }
                 let data = binary.xml_to_db(inner_decryptor)?;
 
                 attachments.insert(
@@ -208,10 +216,14 @@ impl KeePassFile {
 
     /// Convert from database representation to XML representation.
     #[cfg(feature = "save_kdbx4")]
-    fn db_to_xml(db: &crate::db::Database, inner_cipher: &mut dyn Cipher) -> Result<Self, CryptographyError> {
+    fn db_to_xml(
+        db: &crate::db::Database,
+        binary_refs: &HashMap<crate::db::AttachmentId, usize>,
+        inner_cipher: &mut dyn Cipher,
+    ) -> Result<Self, CryptographyError> {
         use crate::format::xml_db::meta::Icon;
 
-        let group = Group::db_to_xml(db.root(), inner_cipher)?;
+        let group = Group::db_to_xml(db.root(), binary_refs, inner_cipher)?;
 
         let mut meta: Meta = db.meta.clone().into();
         meta.custom_icons.get_or_insert_default().icons =
@@ -372,7 +384,7 @@ mod tests {
         </KeePassFile>"#;
         let mut cipher = crate::config::InnerCipherConfig::Plain.get_cipher(&[]).unwrap();
         let db = parse_xml(xml.as_bytes(), &[], &mut *cipher).unwrap();
-        let kdbx = KeePassFile::db_to_xml(&db, &mut *cipher).unwrap();
+        let kdbx = KeePassFile::db_to_xml(&db, &HashMap::new(), &mut *cipher).unwrap();
         let xml = quick_xml::se::to_string_with_root("DeletedObjects", &kdbx.root.deleted_objects).unwrap();
         assert!(xml.contains("<DeletionTime>io8Y4g4AAAA=</DeletionTime>"));
     }

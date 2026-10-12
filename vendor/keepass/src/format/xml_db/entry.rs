@@ -158,6 +158,7 @@ impl Entry {
     #[cfg(feature = "save_kdbx4")]
     pub(crate) fn db_to_xml(
         db: crate::db::EntryRef<'_>,
+        binary_refs: &HashMap<AttachmentId, usize>,
         inner_encryptor: &mut dyn Cipher,
     ) -> Result<Self, CryptographyError> {
         let (icon_id, custom_icon_uuid) = match db.icon {
@@ -191,17 +192,18 @@ impl Entry {
 
         let mut binary_fields = Vec::with_capacity(db.attachments.len());
         for (key, attachment) in &db.attachments {
-            binary_fields.push(BinaryField {
-                key: key.clone(),
-                value: BinaryValue {
-                    value_ref: attachment.id(),
-                },
-            });
+            // `binary_refs` maps each ID to its position in the written binary list.
+            if let Some(&value_ref) = binary_refs.get(attachment) {
+                binary_fields.push(BinaryField {
+                    key: key.clone(),
+                    value: BinaryValue { value_ref },
+                });
+            }
         }
 
         let history = if let Some(h) = db.history.as_ref() {
             let entries = (0..h.entries.len())
-                .filter_map(|i| Some(Entry::db_to_xml(db.historical(i)?, inner_encryptor)))
+                .filter_map(|i| Some(Entry::db_to_xml(db.historical(i)?, binary_refs, inner_encryptor)))
                 .collect::<Result<Vec<_>, CryptographyError>>()?;
 
             Some(History { entries })
@@ -253,6 +255,10 @@ pub enum UnprotectError {
 
     #[error("History UUID differs from entry UUID")]
     InvalidHistoryId,
+
+    /// two binaries share an ID, so references to it are ambiguous
+    #[error("Duplicate binary ID {0}")]
+    DuplicateBinaryId(usize),
 
     /// the XML database contains two groups with the same UUID
     #[error(transparent)]

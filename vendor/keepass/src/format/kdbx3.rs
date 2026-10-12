@@ -2,7 +2,7 @@ use crate::{
     config::{CompressionConfig, DatabaseConfig, InnerCipherConfig, KdfConfig, OuterCipherConfig},
     crypt::{calculate_sha256, ciphers::Cipher},
     db::{Database, DatabaseFormatError, DatabaseOpenError},
-    format::DatabaseVersion,
+    format::{read_le, DatabaseVersion},
     key::{DatabaseKey, DatabaseKeyError},
 };
 
@@ -84,9 +84,9 @@ fn parse_outer_header(data: &[u8]) -> Result<KDBX3Header, Kdbx3OuterHeaderError>
 
             // COMPRESSIONFLAGS - first byte determines compression of payload
             3 => {
-                compression = Some(CompressionConfig::try_from(LittleEndian::read_u32(
-                    entry_buffer,
-                ))?);
+                let flags =
+                    read_le(entry_buffer, u32::from_le_bytes).ok_or(Kdbx3OuterHeaderError::UnexpectedEof)?;
+                compression = Some(CompressionConfig::try_from(flags)?);
             }
 
             // MASTERSEED - Master seed for deriving the master key
@@ -96,7 +96,10 @@ fn parse_outer_header(data: &[u8]) -> Result<KDBX3Header, Kdbx3OuterHeaderError>
             5 => transform_seed = Some(entry_buffer.to_vec()),
 
             // TRANSFORMROUNDS - Number of rounds used in derivation of transformed key
-            6 => transform_rounds = Some(LittleEndian::read_u64(entry_buffer)),
+            6 => {
+                transform_rounds =
+                    Some(read_le(entry_buffer, u64::from_le_bytes).ok_or(Kdbx3OuterHeaderError::UnexpectedEof)?)
+            }
 
             // ENCRYPTIONIV - Initialization Vector for decrypting the payload
             7 => outer_iv = Some(entry_buffer.to_vec()),
@@ -110,9 +113,9 @@ fn parse_outer_header(data: &[u8]) -> Result<KDBX3Header, Kdbx3OuterHeaderError>
             // INNERRANDOMSTREAMID - specifies which cipher suite
             //                       to use for decrypting the inner protected values
             10 => {
-                inner_cipher = Some(InnerCipherConfig::try_from(LittleEndian::read_u32(
-                    entry_buffer,
-                ))?);
+                let id =
+                    read_le(entry_buffer, u32::from_le_bytes).ok_or(Kdbx3OuterHeaderError::UnexpectedEof)?;
+                inner_cipher = Some(InnerCipherConfig::try_from(id)?);
             }
 
             _ => {

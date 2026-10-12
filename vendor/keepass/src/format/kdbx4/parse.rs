@@ -11,6 +11,7 @@ use crate::{
     db::{Database, DatabaseFormatError, DatabaseOpenError, Value},
     format::{
         hmac_block_stream,
+        read_le,
         kdbx4::{
             KDBX4OuterHeader, HEADER_COMMENT, HEADER_COMPRESSION_ID, HEADER_ENCRYPTION_IV, HEADER_END,
             HEADER_KDF_PARAMS, HEADER_MASTER_SEED, HEADER_OUTER_ENCRYPTION_ID, HEADER_PUBLIC_CUSTOM_DATA,
@@ -196,7 +197,8 @@ fn parse_outer_header(data: &[u8]) -> Result<(KDBX4OuterHeader, usize), Kdbx4Out
             }
 
             HEADER_COMPRESSION_ID => {
-                compression_config = Some(CompressionConfig::try_from(LittleEndian::read_u32(entry_buffer))?);
+                let flags = read_le(entry_buffer, u32::from_le_bytes).ok_or(Kdbx4OuterHeaderError::UnexpectedEof)?;
+                compression_config = Some(CompressionConfig::try_from(flags)?);
             }
 
             HEADER_MASTER_SEED => master_seed = Some(entry_buffer.to_vec()),
@@ -316,7 +318,8 @@ fn parse_inner_header(
             INNER_HEADER_END => break,
 
             INNER_HEADER_RANDOM_STREAM_ID => {
-                inner_random_stream = Some(InnerCipherConfig::try_from(LittleEndian::read_u32(entry_buffer))?);
+                let id = read_le(entry_buffer, u32::from_le_bytes).ok_or(Kdbx4InnerHeaderError::UnexpectedEof)?;
+                inner_random_stream = Some(InnerCipherConfig::try_from(id)?);
             }
 
             INNER_HEADER_RANDOM_STREAM_KEY => inner_random_stream_key = Some(entry_buffer.to_vec()),

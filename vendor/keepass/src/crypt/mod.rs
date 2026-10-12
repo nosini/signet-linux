@@ -78,4 +78,8 @@ pub enum CryptographyError {
     /// Errors related to the Argon2 key derivation function
     #[error(transparent)]
     Argon2(#[from] argon2::Error),
+
+    /// The key derivation parameters ask for more time or memory than allowed
+    #[error("Key derivation parameters exceed the supported limits")]
+    KdfLimit,
 }

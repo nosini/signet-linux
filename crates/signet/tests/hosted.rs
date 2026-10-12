@@ -215,3 +215,68 @@ fn hosted_agent_and_file_setup() {
     stop.store(true, Ordering::Relaxed);
     serving.join().unwrap();
 }
+
+#[test]
+fn malformed_remote_leaves_sync_usable() {
+    if std::env::var_os("SIGNET_MALFORMED_REMOTE_TEST").is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "malformed_remote_leaves_sync_usable",
+                "--nocapture",
+            ])
+            .env("SIGNET_MALFORMED_REMOTE_TEST", "1")
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("XDG_DATA_HOME", dir.path().join("data"))
+            .env("XDG_STATE_HOME", dir.path().join("state"))
+            .env("XDG_RUNTIME_DIR", dir.path().join("run"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = manage::new_config(None, None).unwrap();
+    config.webdav = Some(config::WebDav {
+        url: format!("http://{}/vault.kdbx", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+        username: None,
+        password_command: None,
+        sync_interval: "0s".into(),
+    });
+    manage::initialize(&config, Zeroizing::new("test".into())).unwrap();
+    let original = std::fs::read(&config.vault).unwrap();
+    // A KDBX 4 header whose compression field is empty, served to every sync.
+    let server = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 8192];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 17\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            stream
+                .write_all(&[
+                    0x03, 0xd9, 0xa2, 0x9a, 0x67, 0xfb, 0x4b, 0xb5, 1, 0, 4, 0, 3, 0, 0, 0, 0,
+                ])
+                .unwrap();
+        }
+    });
+    let agent = Agent::start(config.clone(), Arc::new(TestPrompter)).unwrap();
+    let handle = agent.handle();
+    handle.unlock().unwrap();
+    for _ in 0..2 {
+        let error = format!("{:#}", handle.sync().unwrap_err());
+        assert!(error.contains("remote vault is corrupt"), "{error}");
+    }
+    server.join().unwrap();
+    assert_eq!(std::fs::read(&config.vault).unwrap(), original);
+}
