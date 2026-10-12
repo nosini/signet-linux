@@ -25,6 +25,18 @@
   <branding><color type="primary" scheme_preference="light">#183B38</color><color type="primary" scheme_preference="dark">#183B38</color></branding>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.5" date="2026-10-12">
+      <description>
+        <p>Fixes for vault data, sync and key editing:</p>
+        <ul>
+          <li>Attachments in the vault are no longer lost when a KeePass 2.x (KDBX 3) vault is opened or after a key is deleted.</li>
+          <li>A damaged or hostile file on the WebDAV server can no longer stop syncing until Signet restarts, or keep it busy indefinitely.</li>
+          <li>Start at login works in the Flatpak on a fresh login.</li>
+          <li>The app no longer leaves core dumps that could contain the master password or unlocked keys.</li>
+          <li>Removing an expiry date right after setting one takes effect.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-11">
       <description>
         <p>Exported public keys no longer contain comment lines, which mail servers such as Stalwart rejected when the key was pasted into their encryption settings.</p>
